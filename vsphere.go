@@ -104,7 +104,8 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef types.ManagedObjectReference, dcName, clsName string, debugPci, vsanBeta bool) *RawHostData {
 	var hostMo mo.HostSystem
 
-	err := pc.RetrieveOne(ctx, hostRef, []string{"name", "runtime.connectionState", "summary.hardware", "hardware", "config.storageDevice"}, &hostMo)
+	// Added "config.network" and "config.storageDevice" to universally fetch functional mappings
+	err := pc.RetrieveOne(ctx, hostRef, []string{"name", "runtime.connectionState", "summary.hardware", "hardware", "config.network", "config.storageDevice"}, &hostMo)
 	if err != nil || hostMo.Runtime.ConnectionState != types.HostSystemConnectionStateConnected {
 		return nil
 	}
@@ -121,7 +122,33 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 		raw.CpuModel = hostMo.Summary.Hardware.CpuModel
 	}
 
-	// 1. Extract CPU and PCI devices
+	// 1. Build a strict architectural mapping of PCI Bus Addresses to their vSphere Roles
+	pciRoles := make(map[string]string)
+	
+	if hostMo.Config != nil {
+		// Map active Physical Network Adapters (vmnics)
+		if hostMo.Config.Network != nil {
+			for _, pnic := range hostMo.Config.Network.Pnic {
+				pciRoles[pnic.Pci] = "io card (network)"
+			}
+		}
+		// Map active Storage Adapters (HBAs, NVMe, FC, SAS)
+		if hostMo.Config.StorageDevice != nil {
+			for _, hbaBase := range hostMo.Config.StorageDevice.HostBusAdapter {
+				hba := hbaBase.GetHostHostBusAdapter()
+				if hba != nil && hba.Pci != "" {
+					if _, isFC := hbaBase.(*types.HostFibreChannelHba); isFC {
+						pciRoles[hba.Pci] = "io card (fc)"
+					} else {
+						// Captures HostBlockHba, HostInternetScsiHba, HostPCIeHba (NVMe), etc.
+						pciRoles[hba.Pci] = "io card (raid)" 
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Extract CPU and cross-reference PCI devices
 	if hostMo.Hardware != nil {
 		for _, feat := range hostMo.Hardware.CpuFeature {
 			if feat.Level == 1 {
@@ -138,24 +165,27 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 
 		for _, pciDev := range hostMo.Hardware.PciDevice {
 			devName := pciDev.DeviceName
-			var devType string
+			
+			// Primary check: Does vSphere architecturally use this PCI bus as an HBA or NIC?
+			devType := pciRoles[pciDev.Id]
 
-			devNameLower := strings.ToLower(devName)
-			if strings.Contains(devNameLower, "network") || strings.Contains(devNameLower, "ethernet") || strings.Contains(devNameLower, "nic") || strings.Contains(devNameLower, "mellanox") || strings.Contains(devNameLower, "connectx") {
-				devType = "io card (network)"
-			} else if strings.Contains(devNameLower, "fibre channel") || strings.Contains(devNameLower, "hba") || strings.Contains(devNameLower, "qlogic") || strings.Contains(devNameLower, "emulex") {
-				devType = "io card (fc)"
-			} else if strings.Contains(devNameLower, "raid") || strings.Contains(devNameLower, "storage") || strings.Contains(devNameLower, "lsi") || strings.Contains(devNameLower, "broadcom") || strings.Contains(devNameLower, "adaptec") || strings.Contains(devNameLower, "megaraid") {
-				devType = "io card (raid)"
-			} else if strings.Contains(devNameLower, "vga") || strings.Contains(devNameLower, "display") || strings.Contains(devNameLower, "nvidia") || strings.Contains(devNameLower, "amd") {
-				devType = "GPU"
-			}
-
-			if devType != "" || debugPci {
-				if devType == "" {
+			// Secondary fallback: String guessing for GPUs or unconfigured/passthrough cards
+			if devType == "" {
+				devNameLower := strings.ToLower(devName)
+				if strings.Contains(devNameLower, "vga") || strings.Contains(devNameLower, "display") || strings.Contains(devNameLower, "nvidia") || strings.Contains(devNameLower, "amd") {
+					devType = "GPU"
+				} else if strings.Contains(devNameLower, "network") || strings.Contains(devNameLower, "ethernet") || strings.Contains(devNameLower, "nic") || strings.Contains(devNameLower, "mellanox") || strings.Contains(devNameLower, "connectx") {
+					devType = "io card (network)"
+				} else if strings.Contains(devNameLower, "fibre channel") || strings.Contains(devNameLower, "hba") || strings.Contains(devNameLower, "qlogic") || strings.Contains(devNameLower, "emulex") {
+					devType = "io card (fc)"
+				} else if strings.Contains(devNameLower, "raid") || strings.Contains(devNameLower, "storage") || strings.Contains(devNameLower, "lsi") || strings.Contains(devNameLower, "broadcom") || strings.Contains(devNameLower, "adaptec") || strings.Contains(devNameLower, "megaraid") || strings.Contains(devNameLower, "smart array") || strings.Contains(devNameLower, "sas") || strings.Contains(devNameLower, "perc") {
+					devType = "io card (raid)"
+				} else if debugPci {
 					devType = "unknown (debug)"
 				}
-				
+			}
+
+			if devType != "" {
 				raw.PCIDevices = append(raw.PCIDevices, RawPCIDevice{
 					DeviceName: strings.TrimSpace(devName),
 					DeviceType: devType,
@@ -167,7 +197,7 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 		}
 	}
 
-	// 2. Extract Storage / vSAN SSD Disks (BETA)
+	// 3. Extract Storage / vSAN SSD Disks (BETA)
 	if vsanBeta {
 		if hostMo.Config != nil && hostMo.Config.StorageDevice != nil {
 			for _, baseLun := range hostMo.Config.StorageDevice.ScsiLun {
