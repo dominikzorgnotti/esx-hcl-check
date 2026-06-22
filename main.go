@@ -19,6 +19,7 @@ func main() {
 		detailsOut  = flag.Bool("details", false, "Include unique IDs (VID, DID, SSID, CPUID) in the JSON output")
 		debugPci    = flag.Bool("debugpci", false, "Bypass PCI filters and dump all raw PCI devices into the JSON file for troubleshooting")
 		vsanBeta    = flag.Bool("vsan", false, "BETA: Extract vSAN SSD disks (Work in progress, results may not be reliable)")
+		uniqueOut   = flag.Bool("unique", false, "Aggregate and deduplicate output across all hosts globally")
 	)
 	flag.Parse()
 
@@ -68,6 +69,10 @@ func main() {
 	// PHASE 2: HCL Verification
 	// ---------------------------------------------------------
 	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci)
+
+	if *uniqueOut {
+		hclResults = aggregateUnique(hclResults)
+	}
 
 	// ---------------------------------------------------------
 	// PHASE 3: Output Formatting
