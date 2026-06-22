@@ -55,7 +55,8 @@ The tool provides several command-line flags to filter your scope and control th
 | `-release` | The target ESXi release version to validate compatibility against. | `"ESXi 9.1"` |
 | `-dc` | Target a specific Datacenter. Overrides the GOVC\_DATACENTER variable. | `""` (All Datacenters) |
 | `-cluster` | Target a specific Cluster. Overrides the GOVC\_CLUSTER variable. | `""` (All Clusters) |
-| `-json` | Outputs the final HCL evaluation results as a JSON payload instead of a text table. | `false` |
+| `-json` | Outputs the final HCL evaluation results as a JSON payload instead of a text table. | `false` 
+| `-details` | Includes raw hardware identifiers (VID, DID, SSID, CPUID) in the JSON output payload. | `false` |
 | `-vspherejson` | Path to save the raw hardware data extracted from vCenter (Phase 1). | OS Temp Directory |
 | `-nohcl` | Skips the Broadcom HCL validation phase entirely. Useful if you only want to extract the raw vSphere hardware JSON payload. | `false` |
 
