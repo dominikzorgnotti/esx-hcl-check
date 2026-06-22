@@ -19,6 +19,7 @@ type RawHostData struct {
 	SysVendor  string         `json:"sys_vendor"`
 	SysModel   string         `json:"sys_model"`
 	CpuModel   string         `json:"cpu_model"`
+	CpuId      string         `json:"cpu_id"`
 	PCIDevices []RawPCIDevice `json:"pci_devices"`
 }
 
