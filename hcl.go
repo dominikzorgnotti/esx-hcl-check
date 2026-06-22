@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -82,7 +83,6 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 				hostComp.Results[idx].Instances++
 			} else {
 				var hclURL string
-				// Route to specific vSAN query format if it is an NVMe disk
 				if disk.DeviceType == "vSAN NVMe PCIe (beta)" {
 					hclURL = buildVsanNvmeQueryURL(disk.Vendor, disk.Model, releaseVersion)
 				} else {
@@ -105,6 +105,65 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		results = append(results, hostComp)
 	}
 	return results
+}
+
+// aggregateUnique flattens and deduplicates all results globally across the environment.
+func aggregateUnique(data []HostComponents) []HostComponents {
+	type aggKey struct {
+		Device     string
+		DeviceType string
+		HCLLink    string
+		VID        string
+		DID        string
+		SSID       string
+		CPUID      string
+	}
+
+	aggMap := make(map[aggKey]HCLResult)
+
+	for _, host := range data {
+		for _, res := range host.Results {
+			k := aggKey{
+				Device:     res.Device,
+				DeviceType: res.DeviceType,
+				HCLLink:    res.HCLLink,
+				VID:        res.VID,
+				DID:        res.DID,
+				SSID:       res.SSID,
+				CPUID:      res.CPUID,
+			}
+
+			if existing, found := aggMap[k]; found {
+				existing.Instances += res.Instances
+				aggMap[k] = existing
+			} else {
+				aggMap[k] = res
+			}
+		}
+	}
+
+	var aggregatedResults []HCLResult
+	for _, res := range aggMap {
+		aggregatedResults = append(aggregatedResults, res)
+	}
+
+	// Sort the results alphabetically by Device Type, then by Device Name
+	sort.Slice(aggregatedResults, func(i, j int) bool {
+		if aggregatedResults[i].DeviceType == aggregatedResults[j].DeviceType {
+			return aggregatedResults[i].Device < aggregatedResults[j].Device
+		}
+		return aggregatedResults[i].DeviceType < aggregatedResults[j].DeviceType
+	})
+
+	// Wrap the aggregated results in a single, clean HostComponents block for the output writer
+	return []HostComponents{
+		{
+			Datacenter: "Global",
+			Cluster:    "(Aggregated Deduplication)",
+			Hostname:   "All Scanned Hosts",
+			Results:    aggregatedResults,
+		},
+	}
 }
 
 // buildHexQueryURL translates decimal PCI IDs into hex and constructs the Broadcom URL.
@@ -197,8 +256,6 @@ func buildVsanNvmeQueryURL(vendor, model, releaseVersion string) string {
 	
 	params.Set("keyword", model)
 	
-	// Convert standard ESXi string to the expected vSAN string formatting
-	// e.g., "ESXi 9.1" -> "ESXi 9.1 (vSAN 9.1)"
 	vsanRelease := releaseVersion
 	if !strings.Contains(vsanRelease, "vSAN") {
 		vsanVer := strings.Replace(releaseVersion, "ESXi", "vSAN", 1)
