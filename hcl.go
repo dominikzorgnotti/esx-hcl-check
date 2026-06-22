@@ -1,246 +1,210 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net/url"
-	"os"
-	"strconv"
 	"strings"
-
-	"github.com/vmware/govmomi"
-	"github.com/vmware/govmomi/find"
-	"github.com/vmware/govmomi/property"
-	"github.com/vmware/govmomi/vim25/mo"
-	"github.com/vmware/govmomi/vim25/soap"
-	"github.com/vmware/govmomi/vim25/types"
 )
 
-// connectToVC initializes the govmomi client using GOVC_* environment variables.
-func connectToVC(ctx context.Context) (*govmomi.Client, error) {
-	vcURL := os.Getenv("GOVC_URL")
-	if vcURL == "" {
-		return nil, fmt.Errorf("GOVC_URL is not set")
-	}
+// performHCLChecks processes the raw inventory and maps it to Broadcom search queries.
+func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci bool) []HostComponents {
+	var results []HostComponents
 
-	u, err := soap.ParseURL(vcURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid GOVC_URL format: %w", err)
-	}
-
-	username := os.Getenv("GOVC_USERNAME")
-	password := os.Getenv("GOVC_PASSWORD")
-	if username != "" {
-		u.User = url.UserPassword(username, password)
-	}
-
-	insecure := strings.ToLower(os.Getenv("GOVC_INSECURE")) == "true" || os.Getenv("GOVC_INSECURE") == "1"
-
-	return govmomi.NewClient(ctx, u, insecure)
-}
-
-// collectVSphereData traverses the vCenter inventory and builds the raw hardware definitions.
-func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, clsTarget string, debugPci, vsanBeta bool) ([]RawHostData, error) {
-	finder := find.NewFinder(client.Client, true)
-	pc := property.DefaultCollector(client.Client)
-
-	var allHostData []RawHostData
-
-	dcQuery := "*"
-	if dcTarget != "" {
-		dcQuery = dcTarget
-	}
-	datacenters, err := finder.DatacenterList(ctx, dcQuery)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find datacenters: %w", err)
-	}
-
-	for _, dc := range datacenters {
-		finder.SetDatacenter(dc)
-
-		clsQuery := "*"
-		if clsTarget != "" {
-			clsQuery = clsTarget
-		}
-		clusters, err := finder.ClusterComputeResourceList(ctx, clsQuery)
-		if err != nil && clsTarget != "" {
-			return nil, fmt.Errorf("failed to find cluster %s: %w", clsTarget, err)
+	for _, raw := range rawInventory {
+		hostComp := HostComponents{
+			Datacenter: raw.Datacenter,
+			Cluster:    raw.Cluster,
+			Hostname:   raw.Hostname,
 		}
 
-		for _, cluster := range clusters {
-			hosts, err := cluster.Hosts(ctx)
-			if err != nil {
-				continue
-			}
-			for _, hostRef := range hosts {
-				if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), cluster.Name(), debugPci, vsanBeta); hostData != nil {
-					allHostData = append(allHostData, *hostData)
+		// 1. System Chassis
+		sysFullModel := fmt.Sprintf("%s %s", raw.SysVendor, raw.SysModel)
+		hostComp.Results = append(hostComp.Results, buildSystemQuery(sysFullModel, raw.SysModel, releaseVersion))
+
+		// 2. CPU
+		cpuRes := buildCPUQuery(raw.CpuModel, raw.CpuId, releaseVersion)
+		if details && raw.CpuId != "" {
+			cpuRes.CPUID = raw.CpuId
+		}
+		hostComp.Results = append(hostComp.Results, cpuRes)
+
+		// 3. PCI Devices (with Deduplication)
+		type pciKey struct {
+			VID  int16
+			DID  int16
+			SSID int16
+		}
+		
+		pciMap := make(map[pciKey]int)
+
+		for _, pci := range raw.PCIDevices {
+			k := pciKey{VID: pci.VID, DID: pci.DID, SSID: pci.SSID}
+			
+			if idx, found := pciMap[k]; found {
+				hostComp.Results[idx].Instances++
+			} else {
+				hclURL := ""
+				if pci.DeviceType != "unknown (debug)" {
+					hclURL = buildHexQueryURL(releaseVersion, pci.VID, pci.DID, pci.SSID)
 				}
-			}
-		}
 
-		if clsTarget == "" {
-			compResources, err := finder.ComputeResourceList(ctx, "*")
-			if err == nil {
-				for _, cr := range compResources {
-					if cr.Reference().Type == "ClusterComputeResource" {
-						continue
-					}
-					if hosts, err := cr.Hosts(ctx); err == nil {
-						for _, hostRef := range hosts {
-							if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), "", debugPci, vsanBeta); hostData != nil {
-								allHostData = append(allHostData, *hostData)
-							}
-						}
-					}
+				res := HCLResult{
+					Device:     pci.DeviceName,
+					DeviceType: pci.DeviceType,
+					Instances:  1,
+					Certified:  "",
+					HCLLink:    hclURL,
 				}
-			}
-		}
-	}
-	return allHostData, nil
-}
 
-// extractHostHardware fetches raw vSphere properties and maps them to the RawHostData struct.
-func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef types.ManagedObjectReference, dcName, clsName string, debugPci, vsanBeta bool) *RawHostData {
-	var hostMo mo.HostSystem
-
-	err := pc.RetrieveOne(ctx, hostRef, []string{"name", "runtime.connectionState", "summary.hardware", "hardware", "config.network", "config.storageDevice"}, &hostMo)
-	if err != nil || hostMo.Runtime.ConnectionState != types.HostSystemConnectionStateConnected {
-		return nil
-	}
-
-	raw := RawHostData{
-		Datacenter: dcName,
-		Cluster:    clsName,
-		Hostname:   hostMo.Name,
-	}
-
-	if hostMo.Summary.Hardware != nil {
-		raw.SysVendor = hostMo.Summary.Hardware.Vendor
-		raw.SysModel = hostMo.Summary.Hardware.Model
-		raw.CpuModel = hostMo.Summary.Hardware.CpuModel
-	}
-
-	// 1. Build a strict architectural mapping of PCI Bus Addresses to their vSphere Roles
-	pciRoles := make(map[string]string)
-	
-	if hostMo.Config != nil {
-		if hostMo.Config.Network != nil {
-			for _, pnic := range hostMo.Config.Network.Pnic {
-				pciRoles[pnic.Pci] = "io card (network)"
-			}
-		}
-		if hostMo.Config.StorageDevice != nil {
-			for _, hbaBase := range hostMo.Config.StorageDevice.HostBusAdapter {
-				hba := hbaBase.GetHostHostBusAdapter()
-				if hba != nil && hba.Pci != "" {
-					// Type check the HBA to determine if it is a disk or an adapter
-					switch hbaBase.(type) {
-					case *types.HostFibreChannelHba:
-						pciRoles[hba.Pci] = "io card (fc)"
-					case *types.HostPcieHba: // Corrected capitalization here
-						// NVMe controllers map here. These are Disks, not RAID adapters!
-						pciRoles[hba.Pci] = "nvme-disk" 
-					case *types.HostBlockHba, *types.HostSerialAttachedHba, *types.HostInternetScsiHba:
-						pciRoles[hba.Pci] = "io card (raid)"
-					default:
-						pciRoles[hba.Pci] = "io card (raid)"
-					}
+				if details {
+					res.VID = fmt.Sprintf("%04x", uint16(pci.VID))
+					res.DID = fmt.Sprintf("%04x", uint16(pci.DID))
+					res.SSID = fmt.Sprintf("%04x", uint16(pci.SSID))
 				}
+
+				hostComp.Results = append(hostComp.Results, res)
+				pciMap[k] = len(hostComp.Results) - 1
 			}
 		}
-	}
 
-	// 2. Extract CPU and cross-reference PCI devices
-	if hostMo.Hardware != nil {
-		for _, feat := range hostMo.Hardware.CpuFeature {
-			if feat.Level == 1 {
-				cleanEax := strings.ReplaceAll(feat.Eax, ":", "")
-				cleanEax = strings.ReplaceAll(cleanEax, "-", "0") 
-				cleanEax = strings.ReplaceAll(cleanEax, "x", "0") 
+		// 4. SSD Disks (with Deduplication)
+		type diskKey struct {
+			Vendor string
+			Model  string
+		}
+
+		diskMap := make(map[diskKey]int)
+
+		for _, disk := range raw.Disks {
+			k := diskKey{Vendor: disk.Vendor, Model: disk.Model}
+
+			if idx, found := diskMap[k]; found {
+				hostComp.Results[idx].Instances++
+			} else {
+				var hclURL string
+				// Route to specific vSAN query format if it is an NVMe disk
+				if disk.DeviceType == "vSAN NVMe PCIe (beta)" {
+					hclURL = buildVsanNvmeQueryURL(disk.Vendor, disk.Model, releaseVersion)
+				} else {
+					hclURL = buildDiskQueryURL(disk.Vendor, disk.Model, releaseVersion)
+				}
 				
-				if val, err := strconv.ParseUint(cleanEax, 2, 32); err == nil {
-					raw.CpuId = fmt.Sprintf("0x%08x", val)
+				res := HCLResult{
+					Device:     disk.DeviceName,
+					DeviceType: disk.DeviceType,
+					Instances:  1,
+					Certified:  "",
+					HCLLink:    hclURL,
 				}
-				break
+
+				hostComp.Results = append(hostComp.Results, res)
+				diskMap[k] = len(hostComp.Results) - 1
 			}
 		}
 
-		for _, pciDev := range hostMo.Hardware.PciDevice {
-			devName := pciDev.DeviceName
-			devType := pciRoles[pciDev.Id]
-
-			// If vSphere identified this as an NVMe Disk wrapper
-			if devType == "nvme-disk" {
-				if vsanBeta {
-					// Attempt to parse the Vendor from the first word of the device name
-					vendor := ""
-					model := devName
-					parts := strings.SplitN(devName, " ", 2)
-					if len(parts) == 2 {
-						vendor = parts[0]
-						model = parts[1]
-					}
-					
-					raw.Disks = append(raw.Disks, RawDiskDevice{
-						DeviceName: strings.TrimSpace(devName),
-						DeviceType: "vSAN NVMe PCIe (beta)",
-						Vendor:     strings.TrimSpace(vendor),
-						Model:      strings.TrimSpace(model),
-					})
-				}
-				// CRITICAL: We skip adding it to the PCIDevices list to filter it out!
-				continue
-			}
-
-			// Fallback: String guessing for GPUs or unconfigured cards
-			if devType == "" {
-				devNameLower := strings.ToLower(devName)
-				if strings.Contains(devNameLower, "vga") || strings.Contains(devNameLower, "display") || strings.Contains(devNameLower, "nvidia") || strings.Contains(devNameLower, "amd") {
-					devType = "GPU"
-				} else if strings.Contains(devNameLower, "network") || strings.Contains(devNameLower, "ethernet") || strings.Contains(devNameLower, "nic") || strings.Contains(devNameLower, "mellanox") || strings.Contains(devNameLower, "connectx") {
-					devType = "io card (network)"
-				} else if strings.Contains(devNameLower, "fibre channel") || strings.Contains(devNameLower, "hba") || strings.Contains(devNameLower, "qlogic") || strings.Contains(devNameLower, "emulex") {
-					devType = "io card (fc)"
-				} else if strings.Contains(devNameLower, "raid") || strings.Contains(devNameLower, "storage") || strings.Contains(devNameLower, "lsi") || strings.Contains(devNameLower, "broadcom") || strings.Contains(devNameLower, "adaptec") || strings.Contains(devNameLower, "megaraid") || strings.Contains(devNameLower, "smart array") || strings.Contains(devNameLower, "sas") || strings.Contains(devNameLower, "perc") {
-					devType = "io card (raid)"
-				} else if debugPci {
-					devType = "unknown (debug)"
-				}
-			}
-
-			if devType != "" {
-				raw.PCIDevices = append(raw.PCIDevices, RawPCIDevice{
-					DeviceName: strings.TrimSpace(devName),
-					DeviceType: devType,
-					VID:        pciDev.VendorId,
-					DID:        pciDev.DeviceId,
-					SSID:       pciDev.SubDeviceId,
-				})
-			}
-		}
+		results = append(results, hostComp)
 	}
+	return results
+}
 
-	// 3. Extract Storage / Standard SCSI SSD Disks
-	if vsanBeta {
-		if hostMo.Config != nil && hostMo.Config.StorageDevice != nil {
-			for _, baseLun := range hostMo.Config.StorageDevice.ScsiLun {
-				if disk, ok := baseLun.(*types.HostScsiDisk); ok {
-					if disk.Ssd != nil && *disk.Ssd {
-						vendor := strings.TrimSpace(disk.Vendor)
-						model := strings.TrimSpace(disk.Model)
-						
-						raw.Disks = append(raw.Disks, RawDiskDevice{
-							DeviceName: fmt.Sprintf("%s %s", vendor, model),
-							DeviceType: "vSAN SSD (beta)",
-							Vendor:     vendor,
-							Model:      model,
-						})
-					}
-				}
-			}
-		}
+// buildHexQueryURL translates decimal PCI IDs into hex and constructs the Broadcom URL.
+func buildHexQueryURL(releaseVersion string, vid, did, ssid int16) string {
+	baseURL := "https://compatibilityguide.broadcom.com/search"
+
+	params := url.Values{}
+	params.Set("program", "io")
+	params.Set("persona", "live")
+	params.Set("column", "brandName")
+	params.Set("order", "asc")
+	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
+	
+	params.Set("vid", fmt.Sprintf("[%04x]", uint16(vid)))
+	params.Set("did", fmt.Sprintf("[%04x]", uint16(did)))
+	params.Set("maxSsid", fmt.Sprintf("[%04x]", uint16(ssid)))
+
+	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
+}
+
+func buildSystemQuery(displayModel, searchKeyword, releaseVersion string) HCLResult {
+	params := url.Values{}
+	params.Set("program", "server")
+	params.Set("persona", "live")
+	params.Set("keyword", searchKeyword)
+	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
+
+	return HCLResult{
+		Device:     displayModel,
+		DeviceType: "system",
+		Instances:  1,
+		Certified:  "",
+		HCLLink:    "https://compatibilityguide.broadcom.com/search?" + params.Encode(),
 	}
+}
 
-	return &raw
+func buildCPUQuery(cpuModel, cpuId, releaseVersion string) HCLResult {
+	params := url.Values{}
+	params.Set("program", "cpu")
+	params.Set("persona", "live")
+	params.Set("column", "cpuSeries")
+	params.Set("order", "asc")
+
+	keyword := cpuModel
+	if cpuId != "" {
+		keyword = cpuId
+	}
+	params.Set("keyword", keyword)
+
+	return HCLResult{
+		Device:     cpuModel,
+		DeviceType: "CPU",
+		Instances:  1,
+		Certified:  "",
+		HCLLink:    "https://compatibilityguide.broadcom.com/search?" + params.Encode(),
+	}
+}
+
+func buildDiskQueryURL(vendor, model, releaseVersion string) string {
+	baseURL := "https://compatibilityguide.broadcom.com/search"
+	
+	params := url.Values{}
+	params.Set("program", "ssd")
+	params.Set("persona", "live")
+	params.Set("column", "partnerName")
+	params.Set("order", "asc")
+	
+	if vendor != "" {
+		params.Set("partners", fmt.Sprintf("[%s]", vendor))
+	}
+	
+	params.Set("keyword", model)
+	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
+
+	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
+}
+
+func buildVsanNvmeQueryURL(vendor, model, releaseVersion string) string {
+	baseURL := "https://compatibilityguide.broadcom.com/search"
+	
+	params := url.Values{}
+	params.Set("program", "ssd")
+	params.Set("persona", "live")
+	params.Set("column", "partnerName")
+	params.Set("order", "asc")
+	
+	if vendor != "" {
+		params.Set("partners", fmt.Sprintf("[%s]", vendor))
+	}
+	
+	params.Set("keyword", model)
+	
+	// Convert standard ESXi string to the expected vSAN string formatting
+	// e.g., "ESXi 9.1" -> "ESXi 9.1 (vSAN 9.1)"
+	vsanRelease := releaseVersion
+	if !strings.Contains(vsanRelease, "vSAN") {
+		vsanVer := strings.Replace(releaseVersion, "ESXi", "vSAN", 1)
+		vsanRelease = fmt.Sprintf("%s (%s)", releaseVersion, vsanVer)
+	}
+	params.Set("supportedReleases", fmt.Sprintf("[%s]", vsanRelease))
+
+	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
 }
