@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // performHCLChecks processes the raw inventory and maps it to Broadcom search queries.
@@ -80,7 +81,13 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 			if idx, found := diskMap[k]; found {
 				hostComp.Results[idx].Instances++
 			} else {
-				hclURL := buildDiskQueryURL(disk.Vendor, disk.Model, releaseVersion)
+				var hclURL string
+				// Route to specific vSAN query format if it is an NVMe disk
+				if disk.DeviceType == "vSAN NVMe PCIe (beta)" {
+					hclURL = buildVsanNvmeQueryURL(disk.Vendor, disk.Model, releaseVersion)
+				} else {
+					hclURL = buildDiskQueryURL(disk.Vendor, disk.Model, releaseVersion)
+				}
 				
 				res := HCLResult{
 					Device:     disk.DeviceName,
@@ -165,13 +172,39 @@ func buildDiskQueryURL(vendor, model, releaseVersion string) string {
 	params.Set("column", "partnerName")
 	params.Set("order", "asc")
 	
-	// Broadcom's search engine strictly requires the vendor to be bracketed in the 'partners' array
 	if vendor != "" {
 		params.Set("partners", fmt.Sprintf("[%s]", vendor))
 	}
 	
 	params.Set("keyword", model)
 	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
+
+	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
+}
+
+func buildVsanNvmeQueryURL(vendor, model, releaseVersion string) string {
+	baseURL := "https://compatibilityguide.broadcom.com/search"
+	
+	params := url.Values{}
+	params.Set("program", "ssd")
+	params.Set("persona", "live")
+	params.Set("column", "partnerName")
+	params.Set("order", "asc")
+	
+	if vendor != "" {
+		params.Set("partners", fmt.Sprintf("[%s]", vendor))
+	}
+	
+	params.Set("keyword", model)
+	
+	// Convert standard ESXi string to the expected vSAN string formatting
+	// e.g., "ESXi 9.1" -> "ESXi 9.1 (vSAN 9.1)"
+	vsanRelease := releaseVersion
+	if !strings.Contains(vsanRelease, "vSAN") {
+		vsanVer := strings.Replace(releaseVersion, "ESXi", "vSAN", 1)
+		vsanRelease = fmt.Sprintf("%s (%s)", releaseVersion, vsanVer)
+	}
+	params.Set("supportedReleases", fmt.Sprintf("[%s]", vsanRelease))
 
 	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
 }
