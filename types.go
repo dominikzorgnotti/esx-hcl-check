@@ -27,12 +27,17 @@ type RawHostData struct {
 
 // HCLResult represents the certification status of a single hardware component.
 type HCLResult struct {
-	Hostname   string `json:"hostname"`
 	Device     string `json:"device"`
 	DeviceType string `json:"device_type"`
 	Instances  int    `json:"number_of_instances"`
 	Certified  string `json:"certified"`
 	HCLLink    string `json:"hcl"`
+
+	// Detailed hardware IDs (conditionally populated via -details flag)
+	VID   string `json:"vid,omitempty"`
+	DID   string `json:"did,omitempty"`
+	SSID  string `json:"ssid,omitempty"`
+	CPUID string `json:"cpu_id,omitempty"`
 }
 
 // HostComponents holds the HCL results for a single ESXi host.
