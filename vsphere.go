@@ -104,7 +104,6 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef types.ManagedObjectReference, dcName, clsName string, debugPci, vsanBeta bool) *RawHostData {
 	var hostMo mo.HostSystem
 
-	// Added "config.network" and "config.storageDevice" to universally fetch functional mappings
 	err := pc.RetrieveOne(ctx, hostRef, []string{"name", "runtime.connectionState", "summary.hardware", "hardware", "config.network", "config.storageDevice"}, &hostMo)
 	if err != nil || hostMo.Runtime.ConnectionState != types.HostSystemConnectionStateConnected {
 		return nil
@@ -126,22 +125,26 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 	pciRoles := make(map[string]string)
 	
 	if hostMo.Config != nil {
-		// Map active Physical Network Adapters (vmnics)
 		if hostMo.Config.Network != nil {
 			for _, pnic := range hostMo.Config.Network.Pnic {
 				pciRoles[pnic.Pci] = "io card (network)"
 			}
 		}
-		// Map active Storage Adapters (HBAs, NVMe, FC, SAS)
 		if hostMo.Config.StorageDevice != nil {
 			for _, hbaBase := range hostMo.Config.StorageDevice.HostBusAdapter {
 				hba := hbaBase.GetHostHostBusAdapter()
 				if hba != nil && hba.Pci != "" {
-					if _, isFC := hbaBase.(*types.HostFibreChannelHba); isFC {
+					// Type check the HBA to determine if it is a disk or an adapter
+					switch hbaBase.(type) {
+					case *types.HostFibreChannelHba:
 						pciRoles[hba.Pci] = "io card (fc)"
-					} else {
-						// Captures HostBlockHba, HostInternetScsiHba, HostPCIeHba (NVMe), etc.
-						pciRoles[hba.Pci] = "io card (raid)" 
+					case *types.HostPCIeHba:
+						// NVMe controllers map here. These are Disks, not RAID adapters!
+						pciRoles[hba.Pci] = "nvme-disk" 
+					case *types.HostBlockHba, *types.HostSerialAttachedHba, *types.HostInternetScsiHba:
+						pciRoles[hba.Pci] = "io card (raid)"
+					default:
+						pciRoles[hba.Pci] = "io card (raid)"
 					}
 				}
 			}
@@ -165,11 +168,32 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 
 		for _, pciDev := range hostMo.Hardware.PciDevice {
 			devName := pciDev.DeviceName
-			
-			// Primary check: Does vSphere architecturally use this PCI bus as an HBA or NIC?
 			devType := pciRoles[pciDev.Id]
 
-			// Secondary fallback: String guessing for GPUs or unconfigured/passthrough cards
+			// If vSphere identified this as an NVMe Disk wrapper
+			if devType == "nvme-disk" {
+				if vsanBeta {
+					// Attempt to parse the Vendor from the first word of the device name
+					vendor := ""
+					model := devName
+					parts := strings.SplitN(devName, " ", 2)
+					if len(parts) == 2 {
+						vendor = parts[0]
+						model = parts[1]
+					}
+					
+					raw.Disks = append(raw.Disks, RawDiskDevice{
+						DeviceName: strings.TrimSpace(devName),
+						DeviceType: "vSAN NVMe PCIe (beta)",
+						Vendor:     strings.TrimSpace(vendor),
+						Model:      strings.TrimSpace(model),
+					})
+				}
+				// CRITICAL: We skip adding it to the PCIDevices list to filter it out!
+				continue
+			}
+
+			// Fallback: String guessing for GPUs or unconfigured cards
 			if devType == "" {
 				devNameLower := strings.ToLower(devName)
 				if strings.Contains(devNameLower, "vga") || strings.Contains(devNameLower, "display") || strings.Contains(devNameLower, "nvidia") || strings.Contains(devNameLower, "amd") {
@@ -197,7 +221,7 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 		}
 	}
 
-	// 3. Extract Storage / vSAN SSD Disks (BETA)
+	// 3. Extract Storage / Standard SCSI SSD Disks
 	if vsanBeta {
 		if hostMo.Config != nil && hostMo.Config.StorageDevice != nil {
 			for _, baseLun := range hostMo.Config.StorageDevice.ScsiLun {
