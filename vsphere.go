@@ -40,7 +40,7 @@ func connectToVC(ctx context.Context) (*govmomi.Client, error) {
 }
 
 // collectVSphereData traverses the vCenter inventory and builds the raw hardware definitions.
-func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, clsTarget string, debugPci bool) ([]RawHostData, error) {
+func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, clsTarget string, debugPci, vsanBeta bool) ([]RawHostData, error) {
 	finder := find.NewFinder(client.Client, true)
 	pc := property.DefaultCollector(client.Client)
 
@@ -73,7 +73,7 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 				continue
 			}
 			for _, hostRef := range hosts {
-				if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), cluster.Name(), debugPci); hostData != nil {
+				if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), cluster.Name(), debugPci, vsanBeta); hostData != nil {
 					allHostData = append(allHostData, *hostData)
 				}
 			}
@@ -88,7 +88,7 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 					}
 					if hosts, err := cr.Hosts(ctx); err == nil {
 						for _, hostRef := range hosts {
-							if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), "", debugPci); hostData != nil {
+							if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), "", debugPci, vsanBeta); hostData != nil {
 								allHostData = append(allHostData, *hostData)
 							}
 						}
@@ -101,10 +101,9 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 }
 
 // extractHostHardware fetches raw vSphere properties and maps them to the RawHostData struct.
-func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef types.ManagedObjectReference, dcName, clsName string, debugPci bool) *RawHostData {
+func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef types.ManagedObjectReference, dcName, clsName string, debugPci, vsanBeta bool) *RawHostData {
 	var hostMo mo.HostSystem
 
-	// Added "config.storageDevice" to fetch the disk layouts
 	err := pc.RetrieveOne(ctx, hostRef, []string{"name", "runtime.connectionState", "summary.hardware", "hardware", "config.storageDevice"}, &hostMo)
 	if err != nil || hostMo.Runtime.ConnectionState != types.HostSystemConnectionStateConnected {
 		return nil
@@ -168,22 +167,22 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 		}
 	}
 
-	// 2. Extract Storage / vSAN SSD Disks
-	if hostMo.Config != nil && hostMo.Config.StorageDevice != nil {
-		for _, baseLun := range hostMo.Config.StorageDevice.ScsiLun {
-			// Type assert to ensure this LUN is an actual physical disk
-			if disk, ok := baseLun.(*types.HostScsiDisk); ok {
-				// We only care about SSD/NVMe for vSAN compatibility
-				if disk.Ssd != nil && *disk.Ssd {
-					vendor := strings.TrimSpace(disk.Vendor)
-					model := strings.TrimSpace(disk.Model)
-					
-					raw.Disks = append(raw.Disks, RawDiskDevice{
-						DeviceName: fmt.Sprintf("%s %s", vendor, model),
-						DeviceType: "vSAN SSD",
-						Vendor:     vendor,
-						Model:      model,
-					})
+	// 2. Extract Storage / vSAN SSD Disks (BETA)
+	if vsanBeta {
+		if hostMo.Config != nil && hostMo.Config.StorageDevice != nil {
+			for _, baseLun := range hostMo.Config.StorageDevice.ScsiLun {
+				if disk, ok := baseLun.(*types.HostScsiDisk); ok {
+					if disk.Ssd != nil && *disk.Ssd {
+						vendor := strings.TrimSpace(disk.Vendor)
+						model := strings.TrimSpace(disk.Model)
+						
+						raw.Disks = append(raw.Disks, RawDiskDevice{
+							DeviceName: fmt.Sprintf("%s %s", vendor, model),
+							DeviceType: "vSAN SSD (beta)",
+							Vendor:     vendor,
+							Model:      model,
+						})
+					}
 				}
 			}
 		}
