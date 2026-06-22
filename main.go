@@ -17,6 +17,7 @@ func main() {
 		vsphereJson = flag.String("vspherejson", "", "Path to save the raw vSphere hardware JSON (defaults to OS temp dir)")
 		noHCL       = flag.Bool("nohcl", false, "Skip the HCL check phase and only collect vSphere data")
 		detailsOut  = flag.Bool("details", false, "Include unique IDs (VID, DID, SSID, CPUID) in the JSON output")
+		debugPci    = flag.Bool("debugpci", false, "Bypass PCI filters and dump all raw PCI devices into the JSON file for troubleshooting")
 	)
 	flag.Parse()
 
@@ -35,7 +36,7 @@ func main() {
 		fmt.Println("# Collecting inventory and hardware data...")
 	}
 
-	rawInventory, err := collectVSphereData(ctx, client, *dcTarget, *clsTarget)
+	rawInventory, err := collectVSphereData(ctx, client, *dcTarget, *clsTarget, *debugPci)
 	if err != nil {
 		client.Logout(ctx)
 		log.Fatalf("Error discovering inventory: %v", err)
@@ -62,7 +63,7 @@ func main() {
 	// ---------------------------------------------------------
 	// PHASE 2: HCL Verification
 	// ---------------------------------------------------------
-	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut)
+	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci)
 
 	// ---------------------------------------------------------
 	// PHASE 3: Output Formatting
