@@ -6,6 +6,7 @@ A tool that allows a vSphere/VCF administrator to check if the host hardware in 
 
 To run or compile this tool, you will need to initialize a Go module and fetch the required govmomi dependencies:
 
+```bash
 go mod init esx-hcl-check
 go get github.com/vmware/govmomi
 go get github.com/vmware/govmomi/find
@@ -13,3 +14,4 @@ go get github.com/vmware/govmomi/property
 go get github.com/vmware/govmomi/vim25
 go get github.com/vmware/govmomi/vim25/mo
 go get github.com/vmware/govmomi/vim25/types
+```
