@@ -29,7 +29,8 @@ type HCLResult struct {
 	Hostname   string `json:"hostname"`
 	Device     string `json:"device"`
 	DeviceType string `json:"device_type"`
-	Certified  bool   `json:"certified"`
+	Instances  int    `json:"number_of_instances"`
+	Certified  string `json:"certified"`
 	HCLLink    string `json:"hcl"`
 }
 
