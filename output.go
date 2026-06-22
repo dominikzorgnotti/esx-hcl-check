@@ -10,7 +10,6 @@ import (
 
 // saveRawInventory writes the RawHostData array to a JSON file.
 func saveRawInventory(data []RawHostData, targetPath string) (string, error) {
-	// Use a buffer and json.Encoder to prevent HTML escaping of URLs/characters (\u0026)
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetIndent("", "  ")
@@ -54,14 +53,13 @@ func printText(data []HostComponents) {
 		fmt.Printf("Host: %s\n\n", hd.Hostname)
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "------------------------")
-		// Added "number of instances" column
-		fmt.Fprintln(w, "Hostname\tdevice\tdevice type\tnumber of instances\tcertified\thcl")
+		fmt.Fprintln(w, "--------------------------------------------------------------------------------")
+		fmt.Fprintln(w, "| device\t| device type\t| number of instances\t| certified\t| hcl\t|")
+		fmt.Fprintln(w, "--------------------------------------------------------------------------------")
 		
 		for _, res := range hd.Results {
-			// Certified is now empty, but we still print the column dynamically
-			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\n",
-				res.Hostname, res.Device, res.DeviceType, res.Instances, res.Certified, res.HCLLink)
+			fmt.Fprintf(w, "| %s\t| %s\t| %d\t| %s\t| %s\t|\n",
+				res.Device, res.DeviceType, res.Instances, res.Certified, res.HCLLink)
 		}
 		w.Flush()
 		fmt.Printf("\n---\n\n")
@@ -69,7 +67,6 @@ func printText(data []HostComponents) {
 }
 
 func printJSON(data []HostComponents) {
-	// Use json.Encoder to disable HTML escaping directly to stdout
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
