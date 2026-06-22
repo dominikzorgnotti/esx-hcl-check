@@ -6,7 +6,7 @@ import (
 )
 
 // performHCLChecks processes the raw inventory and maps it to Broadcom search queries.
-func performHCLChecks(rawInventory []RawHostData, releaseVersion string) []HostComponents {
+func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details bool) []HostComponents {
 	var results []HostComponents
 
 	for _, raw := range rawInventory {
@@ -18,10 +18,14 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string) []HostC
 
 		// 1. System Chassis
 		sysFullModel := fmt.Sprintf("%s %s", raw.SysVendor, raw.SysModel)
-		hostComp.Results = append(hostComp.Results, buildSystemQuery(raw.Hostname, sysFullModel, releaseVersion))
+		hostComp.Results = append(hostComp.Results, buildSystemQuery(sysFullModel, releaseVersion))
 
 		// 2. CPU
-		hostComp.Results = append(hostComp.Results, buildCPUQuery(raw.Hostname, raw.CpuModel, raw.CpuId, releaseVersion))
+		cpuRes := buildCPUQuery(raw.CpuModel, raw.CpuId, releaseVersion)
+		if details && raw.CpuId != "" {
+			cpuRes.CPUID = raw.CpuId
+		}
+		hostComp.Results = append(hostComp.Results, cpuRes)
 
 		// 3. PCI Devices (with Deduplication)
 		type pciKey struct {
@@ -39,14 +43,22 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string) []HostC
 				hostComp.Results[idx].Instances++
 			} else {
 				hclURL := buildHexQueryURL(releaseVersion, pci.VID, pci.DID, pci.SSID)
-				hostComp.Results = append(hostComp.Results, HCLResult{
-					Hostname:   raw.Hostname,
+				res := HCLResult{
 					Device:     pci.DeviceName,
 					DeviceType: pci.DeviceType,
 					Instances:  1,
 					Certified:  "",
 					HCLLink:    hclURL,
-				})
+				}
+
+				// If the user requested detailed IDs, inject them here as formatted hex strings
+				if details {
+					res.VID = fmt.Sprintf("%04x", uint16(pci.VID))
+					res.DID = fmt.Sprintf("%04x", uint16(pci.DID))
+					res.SSID = fmt.Sprintf("%04x", uint16(pci.SSID))
+				}
+
+				hostComp.Results = append(hostComp.Results, res)
 				pciMap[k] = len(hostComp.Results) - 1
 			}
 		}
@@ -73,7 +85,7 @@ func buildHexQueryURL(releaseVersion string, vid, did, ssid int16) string {
 	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
 }
 
-func buildSystemQuery(hostname, model, releaseVersion string) HCLResult {
+func buildSystemQuery(model, releaseVersion string) HCLResult {
 	params := url.Values{}
 	params.Set("program", "server")
 	params.Set("persona", "live")
@@ -81,7 +93,6 @@ func buildSystemQuery(hostname, model, releaseVersion string) HCLResult {
 	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
 
 	return HCLResult{
-		Hostname:   hostname,
 		Device:     model,
 		DeviceType: "system",
 		Instances:  1,
@@ -90,14 +101,13 @@ func buildSystemQuery(hostname, model, releaseVersion string) HCLResult {
 	}
 }
 
-func buildCPUQuery(hostname, cpuModel, cpuId, releaseVersion string) HCLResult {
+func buildCPUQuery(cpuModel, cpuId, releaseVersion string) HCLResult {
 	params := url.Values{}
 	params.Set("program", "cpu")
 	params.Set("persona", "live")
 	params.Set("column", "cpuSeries")
 	params.Set("order", "asc")
 
-	// Use CPUID hex string if parsed, fallback to string model
 	keyword := cpuModel
 	if cpuId != "" {
 		keyword = cpuId
@@ -105,8 +115,7 @@ func buildCPUQuery(hostname, cpuModel, cpuId, releaseVersion string) HCLResult {
 	params.Set("keyword", keyword)
 
 	return HCLResult{
-		Hostname:   hostname,
-		Device:     cpuModel, // Output human-readable model in table
+		Device:     cpuModel,
 		DeviceType: "CPU",
 		Instances:  1,
 		Certified:  "",
