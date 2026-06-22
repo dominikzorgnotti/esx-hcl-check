@@ -104,7 +104,8 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef types.ManagedObjectReference, dcName, clsName string, debugPci bool) *RawHostData {
 	var hostMo mo.HostSystem
 
-	err := pc.RetrieveOne(ctx, hostRef, []string{"name", "runtime.connectionState", "summary.hardware", "hardware"}, &hostMo)
+	// Added "config.storageDevice" to fetch the disk layouts
+	err := pc.RetrieveOne(ctx, hostRef, []string{"name", "runtime.connectionState", "summary.hardware", "hardware", "config.storageDevice"}, &hostMo)
 	if err != nil || hostMo.Runtime.ConnectionState != types.HostSystemConnectionStateConnected {
 		return nil
 	}
@@ -121,6 +122,7 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 		raw.CpuModel = hostMo.Summary.Hardware.CpuModel
 	}
 
+	// 1. Extract CPU and PCI devices
 	if hostMo.Hardware != nil {
 		for _, feat := range hostMo.Hardware.CpuFeature {
 			if feat.Level == 1 {
@@ -139,7 +141,6 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 			devName := pciDev.DeviceName
 			var devType string
 
-			// Broadened matching heuristics
 			devNameLower := strings.ToLower(devName)
 			if strings.Contains(devNameLower, "network") || strings.Contains(devNameLower, "ethernet") || strings.Contains(devNameLower, "nic") || strings.Contains(devNameLower, "mellanox") || strings.Contains(devNameLower, "connectx") {
 				devType = "io card (network)"
@@ -151,7 +152,6 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 				devType = "GPU"
 			}
 
-			// If debugPci is true, we capture everything and tag unclassified items as "unknown (debug)"
 			if devType != "" || debugPci {
 				if devType == "" {
 					devType = "unknown (debug)"
@@ -167,5 +167,27 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 			}
 		}
 	}
+
+	// 2. Extract Storage / vSAN SSD Disks
+	if hostMo.Config != nil && hostMo.Config.StorageDevice != nil {
+		for _, baseLun := range hostMo.Config.StorageDevice.ScsiLun {
+			// Type assert to ensure this LUN is an actual physical disk
+			if disk, ok := baseLun.(*types.HostScsiDisk); ok {
+				// We only care about SSD/NVMe for vSAN compatibility
+				if disk.Ssd != nil && *disk.Ssd {
+					vendor := strings.TrimSpace(disk.Vendor)
+					model := strings.TrimSpace(disk.Model)
+					
+					raw.Disks = append(raw.Disks, RawDiskDevice{
+						DeviceName: fmt.Sprintf("%s %s", vendor, model),
+						DeviceType: "vSAN SSD",
+						Vendor:     vendor,
+						Model:      model,
+					})
+				}
+			}
+		}
+	}
+
 	return &raw
 }
