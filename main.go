@@ -18,6 +18,7 @@ func main() {
 		noHCL       = flag.Bool("nohcl", false, "Skip the HCL check phase and only collect vSphere data")
 		detailsOut  = flag.Bool("details", false, "Include unique IDs (VID, DID, SSID, CPUID) in the JSON output")
 		debugPci    = flag.Bool("debugpci", false, "Bypass PCI filters and dump all raw PCI devices into the JSON file for troubleshooting")
+		vsanBeta    = flag.Bool("vsan", false, "BETA: Extract vSAN SSD disks (Work in progress, results may not be reliable)")
 	)
 	flag.Parse()
 
@@ -33,10 +34,13 @@ func main() {
 	
 	if !*jsonOutput {
 		fmt.Printf("# Connecting to %s ...\n", client.Client.URL().Host)
+		if *vsanBeta {
+			fmt.Println("⚠️  NOTE: vSAN disk extraction (-vsan) is a BETA feature in work and progress. Results will not be reliable.")
+		}
 		fmt.Println("# Collecting inventory and hardware data...")
 	}
 
-	rawInventory, err := collectVSphereData(ctx, client, *dcTarget, *clsTarget, *debugPci)
+	rawInventory, err := collectVSphereData(ctx, client, *dcTarget, *clsTarget, *debugPci, *vsanBeta)
 	if err != nil {
 		client.Logout(ctx)
 		log.Fatalf("Error discovering inventory: %v", err)
