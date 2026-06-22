@@ -16,6 +16,7 @@ func main() {
 		esxiRelease = flag.String("release", "ESXi 9.1", "Target ESXi version for compatibility validation")
 		vsphereJson = flag.String("vspherejson", "", "Path to save the raw vSphere hardware JSON (defaults to OS temp dir)")
 		noHCL       = flag.Bool("nohcl", false, "Skip the HCL check phase and only collect vSphere data")
+		detailsOut  = flag.Bool("details", false, "Include unique IDs (VID, DID, SSID, CPUID) in the JSON output")
 	)
 	flag.Parse()
 
@@ -61,7 +62,7 @@ func main() {
 	// ---------------------------------------------------------
 	// PHASE 2: HCL Verification
 	// ---------------------------------------------------------
-	hclResults := performHCLChecks(rawInventory, *esxiRelease)
+	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut)
 
 	// ---------------------------------------------------------
 	// PHASE 3: Output Formatting
