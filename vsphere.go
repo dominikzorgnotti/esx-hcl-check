@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/vmware/govmomi"
@@ -22,8 +23,6 @@ func connectToVC(ctx context.Context) (*govmomi.Client, error) {
 		return nil, fmt.Errorf("GOVC_URL is not set")
 	}
 
-	// Use govmomi's built-in SOAP URL parser instead of net/url
-	// This automatically adds the "https://" scheme and the "/sdk" path!
 	u, err := soap.ParseURL(vcURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid GOVC_URL format: %w", err)
@@ -68,7 +67,6 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 			return nil, fmt.Errorf("failed to find cluster %s: %w", clsTarget, err)
 		}
 
-		// 1. Process hosts within clusters.
 		for _, cluster := range clusters {
 			hosts, err := cluster.Hosts(ctx)
 			if err != nil {
@@ -81,7 +79,6 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 			}
 		}
 
-		// 2. Process standalone hosts if no specific cluster was targeted.
 		if clsTarget == "" {
 			compResources, err := finder.ComputeResourceList(ctx, "*")
 			if err == nil {
@@ -125,6 +122,22 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 	}
 
 	if hostMo.Hardware != nil {
+		// Extract CPUID (Processor Signature) from the CPU feature tree
+		for _, feat := range hostMo.Hardware.CpuFeature {
+			if feat.Level == 1 {
+				// EAX value is typically a binary string separated by colons (e.g., "0000:0000:0000:0101:0000:0110:0101:0100")
+				cleanEax := strings.ReplaceAll(feat.Eax, ":", "")
+				cleanEax = strings.ReplaceAll(cleanEax, "-", "0") // Defensive replacement for masked bits
+				cleanEax = strings.ReplaceAll(cleanEax, "x", "0") // Defensive replacement for masked bits
+				
+				// Parse Base-2 string into an integer, then format into hex
+				if val, err := strconv.ParseUint(cleanEax, 2, 32); err == nil {
+					raw.CpuId = fmt.Sprintf("0x%08x", val)
+				}
+				break
+			}
+		}
+
 		for _, pciDev := range hostMo.Hardware.PciDevice {
 			devName := pciDev.DeviceName
 			var devType string
