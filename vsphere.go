@@ -138,7 +138,7 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 					switch hbaBase.(type) {
 					case *types.HostFibreChannelHba:
 						pciRoles[hba.Pci] = "io card (fc)"
-					case *types.HostPCIeHba:
+					case *types.HostPcieHba: // Corrected capitalization here
 						// NVMe controllers map here. These are Disks, not RAID adapters!
 						pciRoles[hba.Pci] = "nvme-disk" 
 					case *types.HostBlockHba, *types.HostSerialAttachedHba, *types.HostInternetScsiHba:
