@@ -6,7 +6,7 @@ import (
 )
 
 // performHCLChecks processes the raw inventory and maps it to Broadcom search queries.
-func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details bool) []HostComponents {
+func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci bool) []HostComponents {
 	var results []HostComponents
 
 	for _, raw := range rawInventory {
@@ -18,7 +18,9 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 
 		// 1. System Chassis
 		sysFullModel := fmt.Sprintf("%s %s", raw.SysVendor, raw.SysModel)
-		hostComp.Results = append(hostComp.Results, buildSystemQuery(sysFullModel, releaseVersion))
+		
+		// Use sysFullModel for the output table display, but ONLY raw.SysModel for the URL query keyword
+		hostComp.Results = append(hostComp.Results, buildSystemQuery(sysFullModel, raw.SysModel, releaseVersion))
 
 		// 2. CPU
 		cpuRes := buildCPUQuery(raw.CpuModel, raw.CpuId, releaseVersion)
@@ -42,7 +44,12 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 			if idx, found := pciMap[k]; found {
 				hostComp.Results[idx].Instances++
 			} else {
-				hclURL := buildHexQueryURL(releaseVersion, pci.VID, pci.DID, pci.SSID)
+				hclURL := ""
+				// If we dumped all devices via -debugpci, don't try to build HCL URLs for RAM/USB bridges
+				if pci.DeviceType != "unknown (debug)" {
+					hclURL = buildHexQueryURL(releaseVersion, pci.VID, pci.DID, pci.SSID)
+				}
+
 				res := HCLResult{
 					Device:     pci.DeviceName,
 					DeviceType: pci.DeviceType,
@@ -51,7 +58,6 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					HCLLink:    hclURL,
 				}
 
-				// If the user requested detailed IDs, inject them here as formatted hex strings
 				if details {
 					res.VID = fmt.Sprintf("%04x", uint16(pci.VID))
 					res.DID = fmt.Sprintf("%04x", uint16(pci.DID))
@@ -85,15 +91,16 @@ func buildHexQueryURL(releaseVersion string, vid, did, ssid int16) string {
 	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
 }
 
-func buildSystemQuery(model, releaseVersion string) HCLResult {
+// buildSystemQuery now takes both a display model and a specific search keyword
+func buildSystemQuery(displayModel, searchKeyword, releaseVersion string) HCLResult {
 	params := url.Values{}
 	params.Set("program", "server")
 	params.Set("persona", "live")
-	params.Set("keyword", model)
+	params.Set("keyword", searchKeyword)
 	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
 
 	return HCLResult{
-		Device:     model,
+		Device:     displayModel,
 		DeviceType: "system",
 		Instances:  1,
 		Certified:  "",
