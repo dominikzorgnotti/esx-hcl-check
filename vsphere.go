@@ -11,6 +11,7 @@ import (
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/property"
 	"github.com/vmware/govmomi/vim25/mo"
+	"github.com/vmware/govmomi/vim25/soap"
 	"github.com/vmware/govmomi/vim25/types"
 )
 
@@ -21,12 +22,9 @@ func connectToVC(ctx context.Context) (*govmomi.Client, error) {
 		return nil, fmt.Errorf("GOVC_URL is not set")
 	}
 
-	// Auto-correct missing protocol scheme
-	if !strings.Contains(vcURL, "://") {
-		vcURL = "https://" + vcURL
-	}
-
-	u, err := url.Parse(vcURL)
+	// Use govmomi's built-in SOAP URL parser instead of net/url
+	// This automatically adds the "https://" scheme and the "/sdk" path!
+	u, err := soap.ParseURL(vcURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid GOVC_URL format: %w", err)
 	}
