@@ -55,8 +55,10 @@ The tool provides several command-line flags to filter your scope and control th
 | `-release` | The target ESXi release version to validate compatibility against. | `"ESXi 9.1"` |
 | `-dc` | Target a specific Datacenter. Overrides the GOVC\_DATACENTER variable. | `""` (All Datacenters) |
 | `-cluster` | Target a specific Cluster. Overrides the GOVC\_CLUSTER variable. | `""` (All Clusters) |
-| `-json` | Outputs the final HCL evaluation results as a JSON payload instead of a text table. | `false` 
+| `-json` | Outputs the final HCL evaluation results as a JSON payload instead of a text table. | `false` |
 | `-details` | Includes raw hardware identifiers (VID, DID, SSID, CPUID) in the JSON output payload. | `false` |
+| `-vsan` | **\[BETA\]** Extracts vSAN SSD NVMe drives. Work in progress, results may not map reliably. | `false` |
+| `-debugpci` | Bypasses I/O filters and dumps all unknown PCI devices into the raw JSON file for troubleshooting. | `false` |
 | `-vspherejson` | Path to save the raw hardware data extracted from vCenter (Phase 1). | OS Temp Directory |
 | `-nohcl` | Skips the Broadcom HCL validation phase entirely. Useful if you only want to extract the raw vSphere hardware JSON payload. | `false` |
 
@@ -66,10 +68,7 @@ The tool provides several command-line flags to filter your scope and control th
 
 ./esx-hcl-check \-cluster="Compute-Cluster-01" \-release="ESXi 8.0 U3"
 
-**Extract hardware to a specific JSON file without generating HCL URLs:**
+**Extract detailed troubleshooting hardware and vSAN disks to a JSON file without HCL URLs:**
 
-./esx-hcl-check \-nohcl \-vspherejson="/opt/reports/raw-hardware.json"
+./esx-hcl-check \-nohcl \-vsan \-debugpci \-vspherejson="/opt/reports/debug-hardware.json"
 
-**Output full results in JSON format for a CI/CD pipeline:**
-
-./esx-hcl-check \-dc="Datacenter-London" \-json  
