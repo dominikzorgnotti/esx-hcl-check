@@ -17,12 +17,14 @@ To compile this code from source, you will need:
 
 Initialize the Go module and fetch the required dependencies:
 
+```
 go mod init esx-hcl-check
+go mod tidy  
+```
 
-2. go mod tidy  
-3. Build the executable:
+2. Build the executable:
 
-   go build \-o esx-hcl-check .
+   `go build \-o esx-hcl-check .`
 
 ## **🚀 Basic Usage (Connection Parameters)**
 
@@ -55,6 +57,7 @@ The tool provides several command-line flags to filter your scope and control th
 | `-release` | The target ESXi release version to validate compatibility against. | `"ESXi 9.1"` |
 | `-dc` | Target a specific Datacenter. Overrides the GOVC\_DATACENTER variable. | `""` (All Datacenters) |
 | `-cluster` | Target a specific Cluster. Overrides the GOVC\_CLUSTER variable. | `""` (All Clusters) |
+| `-unique` | Aggregates and deduplicates all hardware findings globally across all scanned hosts. | `false` |
 | `-json` | Outputs the final HCL evaluation results as a JSON payload instead of a text table. | `false` |
 | `-details` | Includes raw hardware identifiers (VID, DID, SSID, CPUID) in the JSON output payload. | `false` |
 | `-vsan` | **\[BETA\]** Extracts vSAN SSD NVMe drives. Work in progress, results may not map reliably. | `false` |
@@ -64,11 +67,11 @@ The tool provides several command-line flags to filter your scope and control th
 
 ### **Usage Examples**
 
-**Target a specific cluster and check for ESXi 8.0 U3 compatibility:**
+**Check compatibility for an entire datacenter and aggregate the components globally:**
 
-./esx-hcl-check \-cluster="Compute-Cluster-01" \-release="ESXi 8.0 U3"
+`./esx-hcl-check -dc="Datacenter-London" -unique`
 
 **Extract detailed troubleshooting hardware and vSAN disks to a JSON file without HCL URLs:**
 
-./esx-hcl-check \-nohcl \-vsan \-debugpci \-vspherejson="/opt/reports/debug-hardware.json"
+`./esx-hcl-check -nohcl -vsan -debugpci -vspherejson="/opt/reports/debug-hardware.json"`
 
