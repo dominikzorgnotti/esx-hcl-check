@@ -11,16 +11,25 @@ type RawPCIDevice struct {
 	SSID       int16  `json:"ssid"`
 }
 
+// RawDiskDevice holds the raw vendor and model for a storage disk.
+type RawDiskDevice struct {
+	DeviceName string `json:"device_name"`
+	DeviceType string `json:"device_type"`
+	Vendor     string `json:"vendor"`
+	Model      string `json:"model"`
+}
+
 // RawHostData holds the unanalyzed hardware inventory for a single ESXi host.
 type RawHostData struct {
-	Datacenter string         `json:"datacenter"`
-	Cluster    string         `json:"cluster"`
-	Hostname   string         `json:"hostname"`
-	SysVendor  string         `json:"sys_vendor"`
-	SysModel   string         `json:"sys_model"`
-	CpuModel   string         `json:"cpu_model"`
-	CpuId      string         `json:"cpu_id"`
-	PCIDevices []RawPCIDevice `json:"pci_devices"`
+	Datacenter string          `json:"datacenter"`
+	Cluster    string          `json:"cluster"`
+	Hostname   string          `json:"hostname"`
+	SysVendor  string          `json:"sys_vendor"`
+	SysModel   string          `json:"sys_model"`
+	CpuModel   string          `json:"cpu_model"`
+	CpuId      string          `json:"cpu_id"`
+	PCIDevices []RawPCIDevice  `json:"pci_devices"`
+	Disks      []RawDiskDevice `json:"disks"`
 }
 
 // --- Structs for Phase 2: HCL Verification ---
