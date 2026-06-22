@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,10 +10,17 @@ import (
 
 // saveRawInventory writes the RawHostData array to a JSON file.
 func saveRawInventory(data []RawHostData, targetPath string) (string, error) {
-	b, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
+	// Use a buffer and json.Encoder to prevent HTML escaping of URLs/characters (\u0026)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	
+	if err := enc.Encode(data); err != nil {
 		return "", fmt.Errorf("failed to marshal raw data: %w", err)
 	}
+	
+	b := buf.Bytes()
 
 	filePath := targetPath
 	if filePath == "" {
@@ -47,15 +55,13 @@ func printText(data []HostComponents) {
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 		fmt.Fprintln(w, "------------------------")
-		fmt.Fprintln(w, "Hostname\tdevice\tdevice type\tcertified\thcl")
+		// Added "number of instances" column
+		fmt.Fprintln(w, "Hostname\tdevice\tdevice type\tnumber of instances\tcertified\thcl")
 		
 		for _, res := range hd.Results {
-			certStr := "FALSE"
-			if res.Certified {
-				certStr = "TRUE"
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-				res.Hostname, res.Device, res.DeviceType, certStr, res.HCLLink)
+			// Certified is now empty, but we still print the column dynamically
+			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\n",
+				res.Hostname, res.Device, res.DeviceType, res.Instances, res.Certified, res.HCLLink)
 		}
 		w.Flush()
 		fmt.Printf("\n---\n\n")
@@ -63,6 +69,11 @@ func printText(data []HostComponents) {
 }
 
 func printJSON(data []HostComponents) {
-	jsonData, _ := json.MarshalIndent(data, "", "  ")
-	fmt.Println(string(jsonData))
+	// Use json.Encoder to disable HTML escaping directly to stdout
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(data); err != nil {
+		fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
+	}
 }
