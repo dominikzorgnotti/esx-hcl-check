@@ -40,7 +40,7 @@ func connectToVC(ctx context.Context) (*govmomi.Client, error) {
 }
 
 // collectVSphereData traverses the vCenter inventory and builds the raw hardware definitions.
-func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, clsTarget string) ([]RawHostData, error) {
+func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, clsTarget string, debugPci bool) ([]RawHostData, error) {
 	finder := find.NewFinder(client.Client, true)
 	pc := property.DefaultCollector(client.Client)
 
@@ -73,7 +73,7 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 				continue
 			}
 			for _, hostRef := range hosts {
-				if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), cluster.Name()); hostData != nil {
+				if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), cluster.Name(), debugPci); hostData != nil {
 					allHostData = append(allHostData, *hostData)
 				}
 			}
@@ -88,7 +88,7 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 					}
 					if hosts, err := cr.Hosts(ctx); err == nil {
 						for _, hostRef := range hosts {
-							if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), ""); hostData != nil {
+							if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), "", debugPci); hostData != nil {
 								allHostData = append(allHostData, *hostData)
 							}
 						}
@@ -101,7 +101,7 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 }
 
 // extractHostHardware fetches raw vSphere properties and maps them to the RawHostData struct.
-func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef types.ManagedObjectReference, dcName, clsName string) *RawHostData {
+func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef types.ManagedObjectReference, dcName, clsName string, debugPci bool) *RawHostData {
 	var hostMo mo.HostSystem
 
 	err := pc.RetrieveOne(ctx, hostRef, []string{"name", "runtime.connectionState", "summary.hardware", "hardware"}, &hostMo)
@@ -122,15 +122,12 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 	}
 
 	if hostMo.Hardware != nil {
-		// Extract CPUID (Processor Signature) from the CPU feature tree
 		for _, feat := range hostMo.Hardware.CpuFeature {
 			if feat.Level == 1 {
-				// EAX value is typically a binary string separated by colons (e.g., "0000:0000:0000:0101:0000:0110:0101:0100")
 				cleanEax := strings.ReplaceAll(feat.Eax, ":", "")
-				cleanEax = strings.ReplaceAll(cleanEax, "-", "0") // Defensive replacement for masked bits
-				cleanEax = strings.ReplaceAll(cleanEax, "x", "0") // Defensive replacement for masked bits
+				cleanEax = strings.ReplaceAll(cleanEax, "-", "0") 
+				cleanEax = strings.ReplaceAll(cleanEax, "x", "0") 
 				
-				// Parse Base-2 string into an integer, then format into hex
 				if val, err := strconv.ParseUint(cleanEax, 2, 32); err == nil {
 					raw.CpuId = fmt.Sprintf("0x%08x", val)
 				}
@@ -142,17 +139,24 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 			devName := pciDev.DeviceName
 			var devType string
 
-			if strings.Contains(strings.ToLower(devName), "network") || strings.Contains(strings.ToLower(devName), "ethernet") {
+			// Broadened matching heuristics
+			devNameLower := strings.ToLower(devName)
+			if strings.Contains(devNameLower, "network") || strings.Contains(devNameLower, "ethernet") || strings.Contains(devNameLower, "nic") || strings.Contains(devNameLower, "mellanox") || strings.Contains(devNameLower, "connectx") {
 				devType = "io card (network)"
-			} else if strings.Contains(strings.ToLower(devName), "fibre channel") {
+			} else if strings.Contains(devNameLower, "fibre channel") || strings.Contains(devNameLower, "hba") || strings.Contains(devNameLower, "qlogic") || strings.Contains(devNameLower, "emulex") {
 				devType = "io card (fc)"
-			} else if strings.Contains(strings.ToLower(devName), "raid") {
+			} else if strings.Contains(devNameLower, "raid") || strings.Contains(devNameLower, "storage") || strings.Contains(devNameLower, "lsi") || strings.Contains(devNameLower, "broadcom") || strings.Contains(devNameLower, "adaptec") || strings.Contains(devNameLower, "megaraid") {
 				devType = "io card (raid)"
-			} else if strings.Contains(strings.ToLower(devName), "vga") || strings.Contains(strings.ToLower(devName), "display") || strings.Contains(strings.ToLower(devName), "nvidia") {
+			} else if strings.Contains(devNameLower, "vga") || strings.Contains(devNameLower, "display") || strings.Contains(devNameLower, "nvidia") || strings.Contains(devNameLower, "amd") {
 				devType = "GPU"
 			}
 
-			if devType != "" {
+			// If debugPci is true, we capture everything and tag unclassified items as "unknown (debug)"
+			if devType != "" || debugPci {
+				if devType == "" {
+					devType = "unknown (debug)"
+				}
+				
 				raw.PCIDevices = append(raw.PCIDevices, RawPCIDevice{
 					DeviceName: strings.TrimSpace(devName),
 					DeviceType: devType,
