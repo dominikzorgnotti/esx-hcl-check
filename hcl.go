@@ -23,16 +23,35 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string) []HostC
 		// 2. CPU
 		hostComp.Results = append(hostComp.Results, buildCPUQuery(raw.Hostname, raw.CpuModel, releaseVersion))
 
-		// 3. PCI Devices
+		// 3. PCI Devices (with Deduplication)
+		type pciKey struct {
+			VID  int16
+			DID  int16
+			SSID int16
+		}
+		
+		// pciMap stores the index of the HCLResult in hostComp.Results to easily update the Instances count
+		pciMap := make(map[pciKey]int)
+
 		for _, pci := range raw.PCIDevices {
-			hclURL := buildHexQueryURL(releaseVersion, pci.VID, pci.DID, pci.SSID)
-			hostComp.Results = append(hostComp.Results, HCLResult{
-				Hostname:   raw.Hostname,
-				Device:     pci.DeviceName,
-				DeviceType: pci.DeviceType,
-				Certified:  true, // Placeholder for future scraper logic
-				HCLLink:    hclURL,
-			})
+			k := pciKey{VID: pci.VID, DID: pci.DID, SSID: pci.SSID}
+			
+			if idx, found := pciMap[k]; found {
+				// Increment the instance count if we've already seen this exact adapter
+				hostComp.Results[idx].Instances++
+			} else {
+				hclURL := buildHexQueryURL(releaseVersion, pci.VID, pci.DID, pci.SSID)
+				hostComp.Results = append(hostComp.Results, HCLResult{
+					Hostname:   raw.Hostname,
+					Device:     pci.DeviceName,
+					DeviceType: pci.DeviceType,
+					Instances:  1,
+					Certified:  "", // Left empty as requested
+					HCLLink:    hclURL,
+				})
+				// Record the index of this new entry
+				pciMap[k] = len(hostComp.Results) - 1
+			}
 		}
 		results = append(results, hostComp)
 	}
@@ -69,7 +88,8 @@ func buildSystemQuery(hostname, model, releaseVersion string) HCLResult {
 		Hostname:   hostname,
 		Device:     model,
 		DeviceType: "system",
-		Certified:  true,
+		Instances:  1,
+		Certified:  "",
 		HCLLink:    "https://compatibilityguide.broadcom.com/search?" + params.Encode(),
 	}
 }
@@ -84,7 +104,8 @@ func buildCPUQuery(hostname, cpuModel, releaseVersion string) HCLResult {
 		Hostname:   hostname,
 		Device:     cpuModel,
 		DeviceType: "CPU",
-		Certified:  true,
+		Instances:  1,
+		Certified:  "",
 		HCLLink:    "https://compatibilityguide.broadcom.com/search?" + params.Encode(),
 	}
 }
