@@ -21,6 +21,11 @@ func connectToVC(ctx context.Context) (*govmomi.Client, error) {
 		return nil, fmt.Errorf("GOVC_URL is not set")
 	}
 
+	// Auto-correct missing protocol scheme
+	if !strings.Contains(vcURL, "://") {
+		vcURL = "https://" + vcURL
+	}
+
 	u, err := url.Parse(vcURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid GOVC_URL format: %w", err)
