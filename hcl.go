@@ -18,8 +18,6 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 
 		// 1. System Chassis
 		sysFullModel := fmt.Sprintf("%s %s", raw.SysVendor, raw.SysModel)
-		
-		// Use sysFullModel for the output table display, but ONLY raw.SysModel for the URL query keyword
 		hostComp.Results = append(hostComp.Results, buildSystemQuery(sysFullModel, raw.SysModel, releaseVersion))
 
 		// 2. CPU
@@ -45,7 +43,6 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 				hostComp.Results[idx].Instances++
 			} else {
 				hclURL := ""
-				// If we dumped all devices via -debugpci, don't try to build HCL URLs for RAM/USB bridges
 				if pci.DeviceType != "unknown (debug)" {
 					hclURL = buildHexQueryURL(releaseVersion, pci.VID, pci.DID, pci.SSID)
 				}
@@ -68,6 +65,36 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 				pciMap[k] = len(hostComp.Results) - 1
 			}
 		}
+
+		// 4. SSD Disks (with Deduplication)
+		type diskKey struct {
+			Vendor string
+			Model  string
+		}
+
+		diskMap := make(map[diskKey]int)
+
+		for _, disk := range raw.Disks {
+			k := diskKey{Vendor: disk.Vendor, Model: disk.Model}
+
+			if idx, found := diskMap[k]; found {
+				hostComp.Results[idx].Instances++
+			} else {
+				hclURL := buildDiskQueryURL(disk.Vendor, disk.Model, releaseVersion)
+				
+				res := HCLResult{
+					Device:     disk.DeviceName,
+					DeviceType: disk.DeviceType,
+					Instances:  1,
+					Certified:  "",
+					HCLLink:    hclURL,
+				}
+
+				hostComp.Results = append(hostComp.Results, res)
+				diskMap[k] = len(hostComp.Results) - 1
+			}
+		}
+
 		results = append(results, hostComp)
 	}
 	return results
@@ -91,7 +118,6 @@ func buildHexQueryURL(releaseVersion string, vid, did, ssid int16) string {
 	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
 }
 
-// buildSystemQuery now takes both a display model and a specific search keyword
 func buildSystemQuery(displayModel, searchKeyword, releaseVersion string) HCLResult {
 	params := url.Values{}
 	params.Set("program", "server")
@@ -128,4 +154,24 @@ func buildCPUQuery(cpuModel, cpuId, releaseVersion string) HCLResult {
 		Certified:  "",
 		HCLLink:    "https://compatibilityguide.broadcom.com/search?" + params.Encode(),
 	}
+}
+
+func buildDiskQueryURL(vendor, model, releaseVersion string) string {
+	baseURL := "https://compatibilityguide.broadcom.com/search"
+	
+	params := url.Values{}
+	params.Set("program", "ssd")
+	params.Set("persona", "live")
+	params.Set("column", "partnerName")
+	params.Set("order", "asc")
+	
+	// Broadcom's search engine strictly requires the vendor to be bracketed in the 'partners' array
+	if vendor != "" {
+		params.Set("partners", fmt.Sprintf("[%s]", vendor))
+	}
+	
+	params.Set("keyword", model)
+	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
+
+	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
 }
