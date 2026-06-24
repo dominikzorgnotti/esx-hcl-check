@@ -23,11 +23,15 @@ func main() {
 	)
 	flag.Parse()
 
-	// 1. Mandatory Parameter Check
 	if *esxiRelease == "" {
 		fmt.Println("Error: The -release parameter is mandatory.")
 		fmt.Println("Hint: The input should match the 'Product Release Version' on the Compatibility Guide, e.g. 'ESXi 9.1' or 'ESXi 8.0 U3'")
 		os.Exit(1)
+	}
+
+	// Auto-enable JSON output if detailed hardware IDs are requested
+	if *detailsOut {
+		*jsonOutput = true
 	}
 
 	ctx := context.Background()
@@ -45,6 +49,7 @@ func main() {
 		if *vsanBeta {
 			fmt.Println("⚠️  NOTE: vSAN disk extraction (-vsan) is a BETA feature in work and progress. Results will not be reliable.")
 		}
+		fmt.Println("ℹ️  NOTE: The text output displays a minimized view. Run with -json to see full details (firmware, drivers, etc.).")
 		fmt.Println("# Collecting inventory and hardware data...")
 	}
 
