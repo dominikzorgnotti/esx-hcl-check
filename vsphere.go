@@ -121,12 +121,20 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 		raw.CpuModel = hostMo.Summary.Hardware.CpuModel
 	}
 
+	// NEW: Extract the System BIOS version as the primary firmware representation for the server
+	if hostMo.Hardware != nil && hostMo.Hardware.BiosInfo != nil {
+		raw.BiosVersion = hostMo.Hardware.BiosInfo.BiosVersion
+	}
+
 	pciRoles := make(map[string]string)
+	pciPnics := make(map[string]types.PhysicalNic)
 	
 	if hostMo.Config != nil {
+		// Map Physical NICs to cross-reference firmware and drivers later
 		if hostMo.Config.Network != nil {
 			for _, pnic := range hostMo.Config.Network.Pnic {
 				pciRoles[pnic.Pci] = "io card (network)"
+				pciPnics[pnic.Pci] = pnic
 			}
 		}
 		if hostMo.Config.StorageDevice != nil {
@@ -166,6 +174,14 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 			devName := pciDev.DeviceName
 			devType := pciRoles[pciDev.Id]
 
+			// Dynamically populate Firmware and Drivers if this is a Physical NIC
+			var fw, dv, dn string
+			if pnic, ok := pciPnics[pciDev.Id]; ok {
+				fw = pnic.FirmwareVersion
+				dv = pnic.DriverVersion
+				dn = pnic.Driver
+			}
+
 			if devType == "nvme-disk" {
 				if vsanBeta {
 					vendor := ""
@@ -181,7 +197,7 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 						DeviceType: "vSAN NVMe PCIe (beta)",
 						Vendor:     strings.TrimSpace(vendor),
 						Model:      strings.TrimSpace(model),
-						Firmware:   "", // Native NVMe PCIe wrappers don't expose Revision here
+						Firmware:   "",
 					})
 				}
 				continue
@@ -210,7 +226,9 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 					DID:        pciDev.DeviceId,
 					SVID:       pciDev.SubVendorId,
 					SSID:       pciDev.SubDeviceId,
-					Firmware:   "", // HBAs and NICs do not natively expose firmware in base Host properties
+					Firmware:   fw,
+					DriverVer:  dv,
+					DriverName: dn,
 				})
 			}
 		}
