@@ -1,5 +1,7 @@
 package main
 
+import "regexp"
+
 // --- Structs for Phase 1: Raw vSphere Data Collection ---
 
 // RawPCIDevice holds the raw hardware IDs for a single PCI device.
@@ -36,6 +38,24 @@ type RawHostData struct {
 	CpuId       string          `json:"cpu_id"`
 	PCIDevices  []RawPCIDevice  `json:"pci_devices"`
 	Disks       []RawDiskDevice `json:"disks"`
+}
+
+// --- Exclude Configuration ---
+
+// ExcludeID represents a hardware hex combination to drop.
+type ExcludeID struct {
+	VID  string `json:"vid"`
+	DID  string `json:"did"`
+	SVID string `json:"svid"`
+	SSID string `json:"ssid"`
+}
+
+// ExcludeConfig maps directly to the exclude.json payload.
+type ExcludeConfig struct {
+	Names           []string         `json:"names"`
+	RegexNames      []string         `json:"regex_names"`
+	IDs             []ExcludeID      `json:"ids"`
+	CompiledRegexes []*regexp.Regexp `json:"-"`
 }
 
 // --- Structs for Phase 2: HCL Verification ---
