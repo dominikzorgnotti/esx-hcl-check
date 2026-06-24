@@ -11,6 +11,8 @@ type RawPCIDevice struct {
 	SVID       int16  `json:"svid"`
 	SSID       int16  `json:"ssid"`
 	Firmware   string `json:"firmware"`
+	DriverVer  string `json:"driver_version"`
+	DriverName string `json:"driver_name"`
 }
 
 // RawDiskDevice holds the raw vendor and model for a storage disk.
@@ -24,15 +26,16 @@ type RawDiskDevice struct {
 
 // RawHostData holds the unanalyzed hardware inventory for a single ESXi host.
 type RawHostData struct {
-	Datacenter string          `json:"datacenter"`
-	Cluster    string          `json:"cluster"`
-	Hostname   string          `json:"hostname"`
-	SysVendor  string          `json:"sys_vendor"`
-	SysModel   string          `json:"sys_model"`
-	CpuModel   string          `json:"cpu_model"`
-	CpuId      string          `json:"cpu_id"`
-	PCIDevices []RawPCIDevice  `json:"pci_devices"`
-	Disks      []RawDiskDevice `json:"disks"`
+	Datacenter  string          `json:"datacenter"`
+	Cluster     string          `json:"cluster"`
+	Hostname    string          `json:"hostname"`
+	SysVendor   string          `json:"sys_vendor"`
+	SysModel    string          `json:"sys_model"`
+	BiosVersion string          `json:"bios_version"`
+	CpuModel    string          `json:"cpu_model"`
+	CpuId       string          `json:"cpu_id"`
+	PCIDevices  []RawPCIDevice  `json:"pci_devices"`
+	Disks       []RawDiskDevice `json:"disks"`
 }
 
 // --- Structs for Phase 2: HCL Verification ---
@@ -43,6 +46,8 @@ type HCLResult struct {
 	DeviceType string `json:"device_type"`
 	Instances  int    `json:"number_of_instances"`
 	Firmware   string `json:"current_firmware"`
+	DriverVer  string `json:"current_driver_version"`
+	DriverName string `json:"driver_name"`
 	Certified  string `json:"certified"`
 	HCLLink    string `json:"hcl"`
 
