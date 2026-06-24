@@ -8,6 +8,7 @@ type RawPCIDevice struct {
 	DeviceType string `json:"device_type"`
 	VID        int16  `json:"vid"`
 	DID        int16  `json:"did"`
+	SVID       int16  `json:"svid"`
 	SSID       int16  `json:"ssid"`
 	Firmware   string `json:"firmware"`
 }
@@ -48,6 +49,7 @@ type HCLResult struct {
 	// Detailed hardware IDs (conditionally populated via -details flag)
 	VID   string `json:"vid,omitempty"`
 	DID   string `json:"did,omitempty"`
+	SVID  string `json:"svid,omitempty"`
 	SSID  string `json:"ssid,omitempty"`
 	CPUID string `json:"cpu_id,omitempty"`
 }
