@@ -31,7 +31,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 
 		sysRes := buildSystemQuery(sysFullModel, raw.SysModel, releaseVersion)
 		sysRes.Certified = sysCertified
-		sysRes.Firmware = raw.BiosVersion // MAP BIOS TO SYSTEM FIRMWARE
+		sysRes.Firmware = raw.BiosVersion
 		hostComp.Results = append(hostComp.Results, sysRes)
 
 		// 2. CPU
@@ -57,15 +57,12 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 			DID  int16
 			SVID int16
 			SSID int16
-			FW   string
-			DV   string
-			DN   string
 		}
 		
 		pciMap := make(map[pciKey]int)
 
 		for _, pci := range raw.PCIDevices {
-			k := pciKey{VID: pci.VID, DID: pci.DID, SVID: pci.SVID, SSID: pci.SSID, FW: pci.Firmware, DV: pci.DriverVer, DN: pci.DriverName}
+			k := pciKey{VID: pci.VID, DID: pci.DID, SVID: pci.SVID, SSID: pci.SSID}
 			
 			if idx, found := pciMap[k]; found {
 				hostComp.Results[idx].Instances++
@@ -295,30 +292,38 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 	}
 }
 
-func buildHexQueryURL(releaseVersion string, vid, did, svid, ssid int16) string {
-	baseURL := "https://compatibilityguide.broadcom.com/search"
+// -------------------------------------------------------------
+// URL Builders: Refactored to natively use url.Parse & u.String
+// -------------------------------------------------------------
 
+func buildHexQueryURL(releaseVersion string, vid, did, svid, ssid int16) string {
+	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
+	
 	params := url.Values{}
 	params.Set("program", "io")
 	params.Set("persona", "live")
 	params.Set("column", "brandName")
 	params.Set("order", "asc")
 	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
-	
 	params.Set("vid", fmt.Sprintf("[%04x]", uint16(vid)))
 	params.Set("did", fmt.Sprintf("[%04x]", uint16(did)))
 	params.Set("svid", fmt.Sprintf("[%04x]", uint16(svid)))
 	params.Set("ssid", fmt.Sprintf("[%04x]", uint16(ssid)))
 
-	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
+	u.RawQuery = params.Encode()
+	return u.String()
 }
 
 func buildSystemQuery(displayModel, searchKeyword, releaseVersion string) HCLResult {
+	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
+	
 	params := url.Values{}
 	params.Set("program", "server")
 	params.Set("persona", "live")
 	params.Set("keyword", searchKeyword)
 	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
+
+	u.RawQuery = params.Encode()
 
 	return HCLResult{
 		Device:     displayModel,
@@ -326,11 +331,13 @@ func buildSystemQuery(displayModel, searchKeyword, releaseVersion string) HCLRes
 		Instances:  1,
 		Firmware:   "",
 		Certified:  "", 
-		HCLLink:    "https://compatibilityguide.broadcom.com/search?" + params.Encode(),
+		HCLLink:    u.String(),
 	}
 }
 
 func buildCPUQuery(cpuModel, cpuId, releaseVersion string) HCLResult {
+	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
+	
 	params := url.Values{}
 	params.Set("program", "cpu")
 	params.Set("persona", "live")
@@ -343,18 +350,20 @@ func buildCPUQuery(cpuModel, cpuId, releaseVersion string) HCLResult {
 	}
 	params.Set("keyword", keyword)
 
+	u.RawQuery = params.Encode()
+
 	return HCLResult{
 		Device:     cpuModel,
 		DeviceType: "CPU",
 		Instances:  1,
 		Firmware:   "",
 		Certified:  "",
-		HCLLink:    "https://compatibilityguide.broadcom.com/search?" + params.Encode(),
+		HCLLink:    u.String(),
 	}
 }
 
 func buildDiskQueryURL(vendor, model, releaseVersion string) string {
-	baseURL := "https://compatibilityguide.broadcom.com/search"
+	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
 	
 	params := url.Values{}
 	params.Set("program", "ssd")
@@ -369,11 +378,12 @@ func buildDiskQueryURL(vendor, model, releaseVersion string) string {
 	params.Set("keyword", model)
 	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
 
-	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
+	u.RawQuery = params.Encode()
+	return u.String()
 }
 
 func buildVsanNvmeQueryURL(vendor, model, releaseVersion string) string {
-	baseURL := "https://compatibilityguide.broadcom.com/search"
+	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
 	
 	params := url.Values{}
 	params.Set("program", "ssd")
@@ -394,5 +404,6 @@ func buildVsanNvmeQueryURL(vendor, model, releaseVersion string) string {
 	}
 	params.Set("supportedReleases", fmt.Sprintf("[%s]", vsanRelease))
 
-	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
+	u.RawQuery = params.Encode()
+	return u.String()
 }
