@@ -31,6 +31,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 
 		sysRes := buildSystemQuery(sysFullModel, raw.SysModel, releaseVersion)
 		sysRes.Certified = sysCertified
+		sysRes.Firmware = raw.BiosVersion // MAP BIOS TO SYSTEM FIRMWARE
 		hostComp.Results = append(hostComp.Results, sysRes)
 
 		// 2. CPU
@@ -56,12 +57,15 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 			DID  int16
 			SVID int16
 			SSID int16
+			FW   string
+			DV   string
+			DN   string
 		}
 		
 		pciMap := make(map[pciKey]int)
 
 		for _, pci := range raw.PCIDevices {
-			k := pciKey{VID: pci.VID, DID: pci.DID, SVID: pci.SVID, SSID: pci.SSID}
+			k := pciKey{VID: pci.VID, DID: pci.DID, SVID: pci.SVID, SSID: pci.SSID, FW: pci.Firmware, DV: pci.DriverVer, DN: pci.DriverName}
 			
 			if idx, found := pciMap[k]; found {
 				hostComp.Results[idx].Instances++
@@ -77,7 +81,6 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 				if pci.DeviceType != "unknown (debug)" {
 					hclURL = buildHexQueryURL(releaseVersion, int16(pci.VID), int16(pci.DID), int16(pci.SVID), int16(pci.SSID))
 					
-					// Rebuilt filter logic targeting precise API display keys
 					filters := []map[string]interface{}{
 						{"displayKey": "vid", "filterValues": []string{vidHex}},
 						{"displayKey": "did", "filterValues": []string{didHex}},
@@ -92,6 +95,8 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					DeviceType: pci.DeviceType,
 					Instances:  1,
 					Firmware:   pci.Firmware,
+					DriverVer:  pci.DriverVer,
+					DriverName: pci.DriverName,
 					Certified:  certifiedStatus,
 					HCLLink:    hclURL,
 				}
@@ -160,7 +165,6 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 	return results
 }
 
-// queryBroadcomAPI sends a POST request to the Broadcom JSON endpoint and parses the certification status.
 func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywords []string, targetRelease string) string {
 	type bcmRequest struct {
 		ProgramId string                   `json:"programId"`
@@ -227,7 +231,6 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 	return "FALSE"
 }
 
-// aggregateUnique flattens and deduplicates all results globally across the environment.
 func aggregateUnique(data []HostComponents) []HostComponents {
 	type aggKey struct {
 		Device     string
@@ -239,6 +242,8 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 		SSID       string
 		CPUID      string
 		Firmware   string
+		DriverVer  string
+		DriverName string
 	}
 
 	aggMap := make(map[aggKey]HCLResult)
@@ -255,6 +260,8 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 				SSID:       res.SSID,
 				CPUID:      res.CPUID,
 				Firmware:   res.Firmware,
+				DriverVer:  res.DriverVer,
+				DriverName: res.DriverName,
 			}
 
 			if existing, found := aggMap[k]; found {
@@ -288,7 +295,6 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 	}
 }
 
-// buildHexQueryURL translates decimal PCI IDs into hex and constructs the Broadcom URL.
 func buildHexQueryURL(releaseVersion string, vid, did, svid, ssid int16) string {
 	baseURL := "https://compatibilityguide.broadcom.com/search"
 
