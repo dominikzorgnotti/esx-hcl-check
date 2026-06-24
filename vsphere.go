@@ -176,12 +176,12 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 						model = parts[1]
 					}
 					
-					// Base PCI NVMe wrappers don't natively expose revision here, handled by ScsiLun below
 					raw.Disks = append(raw.Disks, RawDiskDevice{
 						DeviceName: strings.TrimSpace(devName),
 						DeviceType: "vSAN NVMe PCIe (beta)",
 						Vendor:     strings.TrimSpace(vendor),
 						Model:      strings.TrimSpace(model),
+						Firmware:   "", // Native NVMe PCIe wrappers don't expose Revision here
 					})
 				}
 				continue
@@ -208,8 +208,9 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 					DeviceType: devType,
 					VID:        pciDev.VendorId,
 					DID:        pciDev.DeviceId,
+					SVID:       pciDev.SubVendorId,
 					SSID:       pciDev.SubDeviceId,
-					Firmware:   "", // Left blank because base API does not expose HBA/NIC firmware natively
+					Firmware:   "", // HBAs and NICs do not natively expose firmware in base Host properties
 				})
 			}
 		}
@@ -228,7 +229,7 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 							DeviceType: "vSAN SSD (beta)",
 							Vendor:     vendor,
 							Model:      model,
-							Firmware:   strings.TrimSpace(disk.Revision), // ScsiLun explicitly exposes firmware here
+							Firmware:   strings.TrimSpace(disk.Revision),
 						})
 					}
 				}
