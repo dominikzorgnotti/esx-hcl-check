@@ -22,15 +22,32 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 			Hostname:   raw.Hostname,
 		}
 
-		// 1. System Chassis
+		// 1. System Chassis (with API Verification)
 		sysFullModel := fmt.Sprintf("%s %s", raw.SysVendor, raw.SysModel)
-		hostComp.Results = append(hostComp.Results, buildSystemQuery(sysFullModel, raw.SysModel, releaseVersion))
+		sysFilters := []map[string]interface{}{
+			{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}},
+		}
+		sysCertified := queryBroadcomAPI("server", sysFilters, []string{raw.SysModel}, releaseVersion)
 
-		// 2. CPU
+		sysRes := buildSystemQuery(sysFullModel, raw.SysModel, releaseVersion)
+		sysRes.Certified = sysCertified
+		hostComp.Results = append(hostComp.Results, sysRes)
+
+		// 2. CPU (with API Verification)
+		cpuKeyword := raw.CpuModel
+		if raw.CpuId != "" {
+			cpuKeyword = raw.CpuId
+		}
+		cpuFilters := []map[string]interface{}{
+			{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}},
+		}
+		cpuCertified := queryBroadcomAPI("cpu", cpuFilters, []string{cpuKeyword}, releaseVersion)
+
 		cpuRes := buildCPUQuery(raw.CpuModel, raw.CpuId, releaseVersion)
 		if details && raw.CpuId != "" {
 			cpuRes.CPUID = raw.CpuId
 		}
+		cpuRes.Certified = cpuCertified
 		hostComp.Results = append(hostComp.Results, cpuRes)
 
 		// 3. PCI Devices (with Deduplication & API Verification)
@@ -58,11 +75,10 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 				if pci.DeviceType != "unknown (debug)" {
 					hclURL = buildHexQueryURL(releaseVersion, int16(pci.VID), int16(pci.DID), int16(pci.SSID))
 					
-					// Build the API filters exactly like the PowerShell payload
 					filters := []map[string]interface{}{
 						{"displayKey": "vid", "filterValues": []string{vidHex}},
 						{"displayKey": "did", "filterValues": []string{didHex}},
-						{"displayKey": "svid", "filterValues": []string{ssidHex}}, // Broadcom maps SubVendor/SubDevice interchangeably here
+						{"displayKey": "svid", "filterValues": []string{ssidHex}},
 					}
 					certifiedStatus = queryBroadcomAPI("io", filters, []string{}, releaseVersion)
 				}
@@ -108,7 +124,6 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					hclURL = buildDiskQueryURL(disk.Vendor, disk.Model, releaseVersion)
 				}
 				
-				// Build the API payload using partnerName and Keyword for SSDs
 				filters := []map[string]interface{}{}
 				if disk.Vendor != "" {
 					filters = append(filters, map[string]interface{}{
@@ -116,7 +131,9 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 						"filterValues": []string{disk.Vendor},
 					})
 				}
-				certifiedStatus := queryBroadcomAPI("ssd", filters, []string{disk.Model}, releaseVersion)
+				
+				// Updated to use the "vsan" program ID for SSD API verification
+				certifiedStatus := queryBroadcomAPI("vsan", filters, []string{disk.Model}, releaseVersion)
 
 				res := HCLResult{
 					Device:     disk.DeviceName,
@@ -142,14 +159,15 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 		ProgramId string                   `json:"programId"`
 		Filters   []map[string]interface{} `json:"filters"`
 		Keyword   []string                 `json:"keyword"`
-		Date      map[string]interface{}   `json:"date"`
+		Date      map[string]string        `json:"date"`
 	}
 
 	reqBody := bcmRequest{
 		ProgramId: programId,
 		Filters:   filters,
 		Keyword:   keywords,
-		Date:      map[string]interface{}{"startDate": nil, "endDate": nil},
+		// Explicitly map empty strings per the user's JSON payload requirement
+		Date:      map[string]string{"startDate": "", "endDate": ""},
 	}
 
 	jsonData, err := json.Marshal(reqBody)
@@ -182,20 +200,20 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 		return "ERROR"
 	}
 
-	// If the database returns 0 matches for these IDs, it is definitely not certified
+	// If the database returns 0 matches for these IDs/Keywords, it is not certified
 	countFloat, ok := data["count"].(float64)
 	if !ok || countFloat == 0 {
 		return "FALSE"
 	}
 
-	// If we have matches, do an efficient string search across the payload to see if the target release is explicitly listed
+	// Double-verify by searching the payload to see if the target release is explicitly listed
 	bodyStr := string(bodyBytes)
 	if strings.Contains(bodyStr, targetRelease) {
 		return "TRUE"
 	}
 	
-	// SSDs often append the vSAN version (e.g., "ESXi 9.1 (vSAN 9.1)")
-	if programId == "ssd" && !strings.Contains(targetRelease, "vSAN") {
+	// vSAN SSDs often append the vSAN version (e.g., "ESXi 9.1 (vSAN 9.1)")
+	if programId == "vsan" && !strings.Contains(targetRelease, "vSAN") {
 		vsanVer := strings.Replace(targetRelease, "ESXi", "vSAN", 1)
 		vsanTarget := fmt.Sprintf("%s (%s)", targetRelease, vsanVer)
 		if strings.Contains(bodyStr, vsanTarget) {
@@ -292,7 +310,7 @@ func buildSystemQuery(displayModel, searchKeyword, releaseVersion string) HCLRes
 		Device:     displayModel,
 		DeviceType: "system",
 		Instances:  1,
-		Certified:  "", // CPU/Systems currently skip the API verification
+		Certified:  "", 
 		HCLLink:    "https://compatibilityguide.broadcom.com/search?" + params.Encode(),
 	}
 }
@@ -314,7 +332,7 @@ func buildCPUQuery(cpuModel, cpuId, releaseVersion string) HCLResult {
 		Device:     cpuModel,
 		DeviceType: "CPU",
 		Instances:  1,
-		Certified:  "", // CPU/Systems currently skip the API verification
+		Certified:  "",
 		HCLLink:    "https://compatibilityguide.broadcom.com/search?" + params.Encode(),
 	}
 }
