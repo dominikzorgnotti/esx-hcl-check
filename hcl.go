@@ -54,13 +54,14 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		type pciKey struct {
 			VID  int16
 			DID  int16
+			SVID int16
 			SSID int16
 		}
 		
 		pciMap := make(map[pciKey]int)
 
 		for _, pci := range raw.PCIDevices {
-			k := pciKey{VID: pci.VID, DID: pci.DID, SSID: pci.SSID}
+			k := pciKey{VID: pci.VID, DID: pci.DID, SVID: pci.SVID, SSID: pci.SSID}
 			
 			if idx, found := pciMap[k]; found {
 				hostComp.Results[idx].Instances++
@@ -70,15 +71,18 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 				
 				vidHex := fmt.Sprintf("%04x", uint16(pci.VID))
 				didHex := fmt.Sprintf("%04x", uint16(pci.DID))
+				svidHex := fmt.Sprintf("%04x", uint16(pci.SVID))
 				ssidHex := fmt.Sprintf("%04x", uint16(pci.SSID))
 
 				if pci.DeviceType != "unknown (debug)" {
-					hclURL = buildHexQueryURL(releaseVersion, int16(pci.VID), int16(pci.DID), int16(pci.SSID))
+					hclURL = buildHexQueryURL(releaseVersion, int16(pci.VID), int16(pci.DID), int16(pci.SVID), int16(pci.SSID))
 					
+					// Rebuilt filter logic targeting precise API display keys
 					filters := []map[string]interface{}{
 						{"displayKey": "vid", "filterValues": []string{vidHex}},
 						{"displayKey": "did", "filterValues": []string{didHex}},
-						{"displayKey": "svid", "filterValues": []string{ssidHex}},
+						{"displayKey": "svid", "filterValues": []string{svidHex}},
+						{"displayKey": "ssid", "filterValues": []string{ssidHex}},
 					}
 					certifiedStatus = queryBroadcomAPI("io", filters, []string{}, releaseVersion)
 				}
@@ -95,6 +99,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 				if details {
 					res.VID = vidHex
 					res.DID = didHex
+					res.SVID = svidHex
 					res.SSID = ssidHex
 				}
 
@@ -113,7 +118,6 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		diskMap := make(map[diskKey]int)
 
 		for _, disk := range raw.Disks {
-			// Include firmware in the struct key to prevent merging differing firmwares together
 			k := diskKey{Vendor: disk.Vendor, Model: disk.Model, Firmware: disk.Firmware}
 
 			if idx, found := diskMap[k]; found {
@@ -231,9 +235,10 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 		HCLLink    string
 		VID        string
 		DID        string
+		SVID       string
 		SSID       string
 		CPUID      string
-		Firmware   string // Included here so mixed firmwares don't falsely aggregate
+		Firmware   string
 	}
 
 	aggMap := make(map[aggKey]HCLResult)
@@ -246,6 +251,7 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 				HCLLink:    res.HCLLink,
 				VID:        res.VID,
 				DID:        res.DID,
+				SVID:       res.SVID,
 				SSID:       res.SSID,
 				CPUID:      res.CPUID,
 				Firmware:   res.Firmware,
@@ -283,7 +289,7 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 }
 
 // buildHexQueryURL translates decimal PCI IDs into hex and constructs the Broadcom URL.
-func buildHexQueryURL(releaseVersion string, vid, did, ssid int16) string {
+func buildHexQueryURL(releaseVersion string, vid, did, svid, ssid int16) string {
 	baseURL := "https://compatibilityguide.broadcom.com/search"
 
 	params := url.Values{}
@@ -295,7 +301,8 @@ func buildHexQueryURL(releaseVersion string, vid, did, ssid int16) string {
 	
 	params.Set("vid", fmt.Sprintf("[%04x]", uint16(vid)))
 	params.Set("did", fmt.Sprintf("[%04x]", uint16(did)))
-	params.Set("maxSsid", fmt.Sprintf("[%04x]", uint16(ssid)))
+	params.Set("svid", fmt.Sprintf("[%04x]", uint16(svid)))
+	params.Set("ssid", fmt.Sprintf("[%04x]", uint16(ssid)))
 
 	return fmt.Sprintf("%s?%s", baseURL, params.Encode())
 }
