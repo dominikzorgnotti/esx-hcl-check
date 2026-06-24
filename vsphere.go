@@ -121,7 +121,6 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 		raw.CpuModel = hostMo.Summary.Hardware.CpuModel
 	}
 
-	// 1. Build a strict architectural mapping of PCI Bus Addresses to their vSphere Roles
 	pciRoles := make(map[string]string)
 	
 	if hostMo.Config != nil {
@@ -134,12 +133,10 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 			for _, hbaBase := range hostMo.Config.StorageDevice.HostBusAdapter {
 				hba := hbaBase.GetHostHostBusAdapter()
 				if hba != nil && hba.Pci != "" {
-					// Type check the HBA to determine if it is a disk or an adapter
 					switch hbaBase.(type) {
 					case *types.HostFibreChannelHba:
 						pciRoles[hba.Pci] = "io card (fc)"
-					case *types.HostPcieHba: // Corrected capitalization here
-						// NVMe controllers map here. These are Disks, not RAID adapters!
+					case *types.HostPcieHba: 
 						pciRoles[hba.Pci] = "nvme-disk" 
 					case *types.HostBlockHba, *types.HostSerialAttachedHba, *types.HostInternetScsiHba:
 						pciRoles[hba.Pci] = "io card (raid)"
@@ -151,7 +148,6 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 		}
 	}
 
-	// 2. Extract CPU and cross-reference PCI devices
 	if hostMo.Hardware != nil {
 		for _, feat := range hostMo.Hardware.CpuFeature {
 			if feat.Level == 1 {
@@ -170,10 +166,8 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 			devName := pciDev.DeviceName
 			devType := pciRoles[pciDev.Id]
 
-			// If vSphere identified this as an NVMe Disk wrapper
 			if devType == "nvme-disk" {
 				if vsanBeta {
-					// Attempt to parse the Vendor from the first word of the device name
 					vendor := ""
 					model := devName
 					parts := strings.SplitN(devName, " ", 2)
@@ -182,6 +176,7 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 						model = parts[1]
 					}
 					
+					// Base PCI NVMe wrappers don't natively expose revision here, handled by ScsiLun below
 					raw.Disks = append(raw.Disks, RawDiskDevice{
 						DeviceName: strings.TrimSpace(devName),
 						DeviceType: "vSAN NVMe PCIe (beta)",
@@ -189,11 +184,9 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 						Model:      strings.TrimSpace(model),
 					})
 				}
-				// CRITICAL: We skip adding it to the PCIDevices list to filter it out!
 				continue
 			}
 
-			// Fallback: String guessing for GPUs or unconfigured cards
 			if devType == "" {
 				devNameLower := strings.ToLower(devName)
 				if strings.Contains(devNameLower, "vga") || strings.Contains(devNameLower, "display") || strings.Contains(devNameLower, "nvidia") || strings.Contains(devNameLower, "amd") {
@@ -216,12 +209,12 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 					VID:        pciDev.VendorId,
 					DID:        pciDev.DeviceId,
 					SSID:       pciDev.SubDeviceId,
+					Firmware:   "", // Left blank because base API does not expose HBA/NIC firmware natively
 				})
 			}
 		}
 	}
 
-	// 3. Extract Storage / Standard SCSI SSD Disks
 	if vsanBeta {
 		if hostMo.Config != nil && hostMo.Config.StorageDevice != nil {
 			for _, baseLun := range hostMo.Config.StorageDevice.ScsiLun {
@@ -235,6 +228,7 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 							DeviceType: "vSAN SSD (beta)",
 							Vendor:     vendor,
 							Model:      model,
+							Firmware:   strings.TrimSpace(disk.Revision), // ScsiLun explicitly exposes firmware here
 						})
 					}
 				}
