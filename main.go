@@ -13,7 +13,7 @@ func main() {
 		jsonOutput  = flag.Bool("json", false, "Output final HCL results in JSON format")
 		dcTarget    = flag.String("dc", os.Getenv("GOVC_DATACENTER"), "Target datacenter (optional)")
 		clsTarget   = flag.String("cluster", os.Getenv("GOVC_CLUSTER"), "Target cluster (optional)")
-		esxiRelease = flag.String("release", "ESXi 9.1", "Target ESXi version for compatibility validation")
+		esxiRelease = flag.String("release", "", "REQUIRED: Target ESXi version for compatibility validation")
 		vsphereJson = flag.String("vspherejson", "", "Path to save the raw vSphere hardware JSON (defaults to OS temp dir)")
 		noHCL       = flag.Bool("nohcl", false, "Skip the HCL check phase and only collect vSphere data")
 		detailsOut  = flag.Bool("details", false, "Include unique IDs (VID, DID, SSID, CPUID) in the JSON output")
@@ -22,6 +22,13 @@ func main() {
 		uniqueOut   = flag.Bool("unique", false, "Aggregate and deduplicate output across all hosts globally")
 	)
 	flag.Parse()
+
+	// 1. Mandatory Parameter Check
+	if *esxiRelease == "" {
+		fmt.Println("Error: The -release parameter is mandatory.")
+		fmt.Println("Hint: The input should match the 'Product Release Version' on the Compatibility Guide, e.g. 'ESXi 9.1' or 'ESXi 8.0 U3'")
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 
