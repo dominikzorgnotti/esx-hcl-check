@@ -53,13 +53,13 @@ func printText(data []HostComponents) {
 		fmt.Printf("Host: %s\n\n", hd.Hostname)
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "--------------------------------------------------------------------------------")
-		fmt.Fprintln(w, "| device\t| device type\t| number of instances\t| certified\t| hcl\t|")
-		fmt.Fprintln(w, "--------------------------------------------------------------------------------")
+		fmt.Fprintln(w, "----------------------------------------------------------------------------------------------------------------------------------------------------------------")
+		fmt.Fprintln(w, "| device\t| device type\t| number of instances\t| current firmware\t| driver name\t| current driver version\t| certified\t| hcl\t|")
+		fmt.Fprintln(w, "----------------------------------------------------------------------------------------------------------------------------------------------------------------")
 		
 		for _, res := range hd.Results {
-			fmt.Fprintf(w, "| %s\t| %s\t| %d\t| %s\t| %s\t|\n",
-				res.Device, res.DeviceType, res.Instances, res.Certified, res.HCLLink)
+			fmt.Fprintf(w, "| %s\t| %s\t| %d\t| %s\t| %s\t| %s\t| %s\t| %s\t|\n",
+				res.Device, res.DeviceType, res.Instances, res.Firmware, res.DriverName, res.DriverVer, res.Certified, res.HCLLink)
 		}
 		w.Flush()
 		fmt.Printf("\n---\n\n")
