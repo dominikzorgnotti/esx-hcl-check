@@ -22,7 +22,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 			Hostname:   raw.Hostname,
 		}
 
-		// 1. System Chassis (with API Verification)
+		// 1. System Chassis
 		sysFullModel := fmt.Sprintf("%s %s", raw.SysVendor, raw.SysModel)
 		sysFilters := []map[string]interface{}{
 			{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}},
@@ -33,7 +33,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		sysRes.Certified = sysCertified
 		hostComp.Results = append(hostComp.Results, sysRes)
 
-		// 2. CPU (with API Verification)
+		// 2. CPU
 		cpuKeyword := raw.CpuModel
 		if raw.CpuId != "" {
 			cpuKeyword = raw.CpuId
@@ -50,7 +50,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		cpuRes.Certified = cpuCertified
 		hostComp.Results = append(hostComp.Results, cpuRes)
 
-		// 3. PCI Devices (with Deduplication & API Verification)
+		// 3. PCI Devices
 		type pciKey struct {
 			VID  int16
 			DID  int16
@@ -87,6 +87,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					Device:     pci.DeviceName,
 					DeviceType: pci.DeviceType,
 					Instances:  1,
+					Firmware:   pci.Firmware,
 					Certified:  certifiedStatus,
 					HCLLink:    hclURL,
 				}
@@ -102,16 +103,18 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 			}
 		}
 
-		// 4. SSD Disks (with Deduplication & API Verification)
+		// 4. SSD Disks
 		type diskKey struct {
-			Vendor string
-			Model  string
+			Vendor   string
+			Model    string
+			Firmware string
 		}
 
 		diskMap := make(map[diskKey]int)
 
 		for _, disk := range raw.Disks {
-			k := diskKey{Vendor: disk.Vendor, Model: disk.Model}
+			// Include firmware in the struct key to prevent merging differing firmwares together
+			k := diskKey{Vendor: disk.Vendor, Model: disk.Model, Firmware: disk.Firmware}
 
 			if idx, found := diskMap[k]; found {
 				hostComp.Results[idx].Instances++
@@ -132,13 +135,13 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					})
 				}
 				
-				// Updated to use the "vsan" program ID for SSD API verification
 				certifiedStatus := queryBroadcomAPI("vsan", filters, []string{disk.Model}, releaseVersion)
 
 				res := HCLResult{
 					Device:     disk.DeviceName,
 					DeviceType: disk.DeviceType,
 					Instances:  1,
+					Firmware:   disk.Firmware,
 					Certified:  certifiedStatus,
 					HCLLink:    hclURL,
 				}
@@ -166,7 +169,6 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 		ProgramId: programId,
 		Filters:   filters,
 		Keyword:   keywords,
-		// Explicitly map empty strings per the user's JSON payload requirement
 		Date:      map[string]string{"startDate": "", "endDate": ""},
 	}
 
@@ -200,19 +202,16 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 		return "ERROR"
 	}
 
-	// If the database returns 0 matches for these IDs/Keywords, it is not certified
 	countFloat, ok := data["count"].(float64)
 	if !ok || countFloat == 0 {
 		return "FALSE"
 	}
 
-	// Double-verify by searching the payload to see if the target release is explicitly listed
 	bodyStr := string(bodyBytes)
 	if strings.Contains(bodyStr, targetRelease) {
 		return "TRUE"
 	}
 	
-	// vSAN SSDs often append the vSAN version (e.g., "ESXi 9.1 (vSAN 9.1)")
 	if programId == "vsan" && !strings.Contains(targetRelease, "vSAN") {
 		vsanVer := strings.Replace(targetRelease, "ESXi", "vSAN", 1)
 		vsanTarget := fmt.Sprintf("%s (%s)", targetRelease, vsanVer)
@@ -234,6 +233,7 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 		DID        string
 		SSID       string
 		CPUID      string
+		Firmware   string // Included here so mixed firmwares don't falsely aggregate
 	}
 
 	aggMap := make(map[aggKey]HCLResult)
@@ -248,6 +248,7 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 				DID:        res.DID,
 				SSID:       res.SSID,
 				CPUID:      res.CPUID,
+				Firmware:   res.Firmware,
 			}
 
 			if existing, found := aggMap[k]; found {
@@ -310,6 +311,7 @@ func buildSystemQuery(displayModel, searchKeyword, releaseVersion string) HCLRes
 		Device:     displayModel,
 		DeviceType: "system",
 		Instances:  1,
+		Firmware:   "",
 		Certified:  "", 
 		HCLLink:    "https://compatibilityguide.broadcom.com/search?" + params.Encode(),
 	}
@@ -332,6 +334,7 @@ func buildCPUQuery(cpuModel, cpuId, releaseVersion string) HCLResult {
 		Device:     cpuModel,
 		DeviceType: "CPU",
 		Instances:  1,
+		Firmware:   "",
 		Certified:  "",
 		HCLLink:    "https://compatibilityguide.broadcom.com/search?" + params.Encode(),
 	}
