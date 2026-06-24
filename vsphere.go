@@ -40,7 +40,7 @@ func connectToVC(ctx context.Context) (*govmomi.Client, error) {
 }
 
 // collectVSphereData traverses the vCenter inventory and builds the raw hardware definitions.
-func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, clsTarget string, debugPci, vsanBeta bool) ([]RawHostData, error) {
+func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, clsTarget string, debugPci, vsanBeta bool, excludeCfg ExcludeConfig) ([]RawHostData, error) {
 	finder := find.NewFinder(client.Client, true)
 	pc := property.DefaultCollector(client.Client)
 
@@ -73,7 +73,7 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 				continue
 			}
 			for _, hostRef := range hosts {
-				if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), cluster.Name(), debugPci, vsanBeta); hostData != nil {
+				if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), cluster.Name(), debugPci, vsanBeta, excludeCfg); hostData != nil {
 					allHostData = append(allHostData, *hostData)
 				}
 			}
@@ -88,7 +88,7 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 					}
 					if hosts, err := cr.Hosts(ctx); err == nil {
 						for _, hostRef := range hosts {
-							if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), "", debugPci, vsanBeta); hostData != nil {
+							if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), "", debugPci, vsanBeta, excludeCfg); hostData != nil {
 								allHostData = append(allHostData, *hostData)
 							}
 						}
@@ -101,7 +101,7 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 }
 
 // extractHostHardware fetches raw vSphere properties and maps them to the RawHostData struct.
-func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef types.ManagedObjectReference, dcName, clsName string, debugPci, vsanBeta bool) *RawHostData {
+func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef types.ManagedObjectReference, dcName, clsName string, debugPci, vsanBeta bool, excludeCfg ExcludeConfig) *RawHostData {
 	var hostMo mo.HostSystem
 
 	err := pc.RetrieveOne(ctx, hostRef, []string{"name", "runtime.connectionState", "summary.hardware", "hardware", "config.network", "config.storageDevice"}, &hostMo)
@@ -121,7 +121,6 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 		raw.CpuModel = hostMo.Summary.Hardware.CpuModel
 	}
 
-	// NEW: Extract the System BIOS version as the primary firmware representation for the server
 	if hostMo.Hardware != nil && hostMo.Hardware.BiosInfo != nil {
 		raw.BiosVersion = hostMo.Hardware.BiosInfo.BiosVersion
 	}
@@ -130,7 +129,6 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 	pciPnics := make(map[string]types.PhysicalNic)
 	
 	if hostMo.Config != nil {
-		// Map Physical NICs to cross-reference firmware and drivers later
 		if hostMo.Config.Network != nil {
 			for _, pnic := range hostMo.Config.Network.Pnic {
 				pciRoles[pnic.Pci] = "io card (network)"
@@ -172,9 +170,55 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 
 		for _, pciDev := range hostMo.Hardware.PciDevice {
 			devName := pciDev.DeviceName
-			devType := pciRoles[pciDev.Id]
+			
+			// Extract lowercase hex strings for ID comparison
+			vidHex := fmt.Sprintf("%04x", uint16(pciDev.VendorId))
+			didHex := fmt.Sprintf("%04x", uint16(pciDev.DeviceId))
+			svidHex := fmt.Sprintf("%04x", uint16(pciDev.SubVendorId))
+			ssidHex := fmt.Sprintf("%04x", uint16(pciDev.SubDeviceId))
 
-			// Dynamically populate Firmware and Drivers if this is a Physical NIC
+			excluded := false
+			
+			// 1. Exact Name match exclusion
+			for _, name := range excludeCfg.Names {
+				if strings.EqualFold(strings.TrimSpace(devName), name) {
+					excluded = true
+					break
+				}
+			}
+			
+			// 2. Regex match exclusion
+			if !excluded {
+				for _, re := range excludeCfg.CompiledRegexes {
+					if re.MatchString(devName) {
+						excluded = true
+						break
+					}
+				}
+			}
+			
+			// 3. ID match exclusion
+			if !excluded {
+				for _, id := range excludeCfg.IDs {
+					match := true
+					if id.VID != "" && !strings.EqualFold(id.VID, vidHex) { match = false }
+					if id.DID != "" && !strings.EqualFold(id.DID, didHex) { match = false }
+					if id.SVID != "" && !strings.EqualFold(id.SVID, svidHex) { match = false }
+					if id.SSID != "" && !strings.EqualFold(id.SSID, ssidHex) { match = false }
+
+					// If the block successfully matched at least one provided ID constraint
+					if match && (id.VID != "" || id.DID != "" || id.SVID != "" || id.SSID != "") {
+						excluded = true
+						break
+					}
+				}
+			}
+
+			if excluded {
+				continue // Skip processing and dropping it from the raw inventory completely
+			}
+
+			devType := pciRoles[pciDev.Id]
 			var fw, dv, dn string
 			if pnic, ok := pciPnics[pciDev.Id]; ok {
 				fw = pnic.FirmwareVersion
@@ -241,14 +285,34 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 					if disk.Ssd != nil && *disk.Ssd {
 						vendor := strings.TrimSpace(disk.Vendor)
 						model := strings.TrimSpace(disk.Model)
+						diskName := fmt.Sprintf("%s %s", vendor, model)
 						
-						raw.Disks = append(raw.Disks, RawDiskDevice{
-							DeviceName: fmt.Sprintf("%s %s", vendor, model),
-							DeviceType: "vSAN SSD (beta)",
-							Vendor:     vendor,
-							Model:      model,
-							Firmware:   strings.TrimSpace(disk.Revision),
-						})
+						// Verify disk against Exclude rules
+						excluded := false
+						for _, name := range excludeCfg.Names {
+							if strings.EqualFold(strings.TrimSpace(diskName), name) {
+								excluded = true
+								break
+							}
+						}
+						if !excluded {
+							for _, re := range excludeCfg.CompiledRegexes {
+								if re.MatchString(diskName) {
+									excluded = true
+									break
+								}
+							}
+						}
+
+						if !excluded {
+							raw.Disks = append(raw.Disks, RawDiskDevice{
+								DeviceName: diskName,
+								DeviceType: "vSAN SSD (beta)",
+								Vendor:     vendor,
+								Model:      model,
+								Firmware:   strings.TrimSpace(disk.Revision),
+							})
+						}
 					}
 				}
 			}
