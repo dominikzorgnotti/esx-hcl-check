@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 )
 
 func main() {
@@ -20,6 +22,7 @@ func main() {
 		debugPci    = flag.Bool("debugpci", false, "Bypass PCI filters and dump all raw PCI devices into the JSON file for troubleshooting")
 		vsanBeta    = flag.Bool("vsan", false, "BETA: Extract vSAN SSD disks (Work in progress, results may not be reliable)")
 		uniqueOut   = flag.Bool("unique", false, "Aggregate and deduplicate output across all hosts globally")
+		excludeFile = flag.String("exclude", "exclude.json", "Path to the exclude JSON file to filter out specific devices")
 	)
 	flag.Parse()
 
@@ -29,9 +32,33 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Auto-enable JSON output if detailed hardware IDs are requested
 	if *detailsOut {
 		*jsonOutput = true
+	}
+
+	// Load and parse the exclude rules
+	var excludeCfg ExcludeConfig
+	if *excludeFile != "" {
+		if b, err := os.ReadFile(*excludeFile); err == nil {
+			if err := json.Unmarshal(b, &excludeCfg); err != nil {
+				log.Printf("Warning: Failed to parse exclude file %s: %v\n", *excludeFile, err)
+			} else {
+				if !*jsonOutput {
+					fmt.Printf("# Loaded exclude rules from %s\n", *excludeFile)
+				}
+				// Pre-compile the regex statements for efficiency
+				for _, expr := range excludeCfg.RegexNames {
+					if re, err := regexp.Compile(expr); err == nil {
+						excludeCfg.CompiledRegexes = append(excludeCfg.CompiledRegexes, re)
+					} else {
+						log.Printf("Warning: Invalid regex '%s' in exclude file: %v\n", expr, err)
+					}
+				}
+			}
+		} else if *excludeFile != "exclude.json" {
+			// Only throw a warning if the user explicitly provided a filename that wasn't found
+			log.Printf("Warning: Could not read exclude file %s: %v\n", *excludeFile, err)
+		}
 	}
 
 	ctx := context.Background()
@@ -53,7 +80,7 @@ func main() {
 		fmt.Println("# Collecting inventory and hardware data...")
 	}
 
-	rawInventory, err := collectVSphereData(ctx, client, *dcTarget, *clsTarget, *debugPci, *vsanBeta)
+	rawInventory, err := collectVSphereData(ctx, client, *dcTarget, *clsTarget, *debugPci, *vsanBeta, excludeCfg)
 	if err != nil {
 		client.Logout(ctx)
 		log.Fatalf("Error discovering inventory: %v", err)
