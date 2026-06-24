@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -29,7 +33,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		}
 		hostComp.Results = append(hostComp.Results, cpuRes)
 
-		// 3. PCI Devices (with Deduplication)
+		// 3. PCI Devices (with Deduplication & API Verification)
 		type pciKey struct {
 			VID  int16
 			DID  int16
@@ -45,22 +49,36 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 				hostComp.Results[idx].Instances++
 			} else {
 				hclURL := ""
+				certifiedStatus := ""
+				
+				vidHex := fmt.Sprintf("%04x", uint16(pci.VID))
+				didHex := fmt.Sprintf("%04x", uint16(pci.DID))
+				ssidHex := fmt.Sprintf("%04x", uint16(pci.SSID))
+
 				if pci.DeviceType != "unknown (debug)" {
-					hclURL = buildHexQueryURL(releaseVersion, pci.VID, pci.DID, pci.SSID)
+					hclURL = buildHexQueryURL(releaseVersion, int16(pci.VID), int16(pci.DID), int16(pci.SSID))
+					
+					// Build the API filters exactly like the PowerShell payload
+					filters := []map[string]interface{}{
+						{"displayKey": "vid", "filterValues": []string{vidHex}},
+						{"displayKey": "did", "filterValues": []string{didHex}},
+						{"displayKey": "svid", "filterValues": []string{ssidHex}}, // Broadcom maps SubVendor/SubDevice interchangeably here
+					}
+					certifiedStatus = queryBroadcomAPI("io", filters, []string{}, releaseVersion)
 				}
 
 				res := HCLResult{
 					Device:     pci.DeviceName,
 					DeviceType: pci.DeviceType,
 					Instances:  1,
-					Certified:  "",
+					Certified:  certifiedStatus,
 					HCLLink:    hclURL,
 				}
 
 				if details {
-					res.VID = fmt.Sprintf("%04x", uint16(pci.VID))
-					res.DID = fmt.Sprintf("%04x", uint16(pci.DID))
-					res.SSID = fmt.Sprintf("%04x", uint16(pci.SSID))
+					res.VID = vidHex
+					res.DID = didHex
+					res.SSID = ssidHex
 				}
 
 				hostComp.Results = append(hostComp.Results, res)
@@ -68,7 +86,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 			}
 		}
 
-		// 4. SSD Disks (with Deduplication)
+		// 4. SSD Disks (with Deduplication & API Verification)
 		type diskKey struct {
 			Vendor string
 			Model  string
@@ -83,17 +101,28 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 				hostComp.Results[idx].Instances++
 			} else {
 				var hclURL string
+				
 				if disk.DeviceType == "vSAN NVMe PCIe (beta)" {
 					hclURL = buildVsanNvmeQueryURL(disk.Vendor, disk.Model, releaseVersion)
 				} else {
 					hclURL = buildDiskQueryURL(disk.Vendor, disk.Model, releaseVersion)
 				}
 				
+				// Build the API payload using partnerName and Keyword for SSDs
+				filters := []map[string]interface{}{}
+				if disk.Vendor != "" {
+					filters = append(filters, map[string]interface{}{
+						"displayKey": "partnerName",
+						"filterValues": []string{disk.Vendor},
+					})
+				}
+				certifiedStatus := queryBroadcomAPI("ssd", filters, []string{disk.Model}, releaseVersion)
+
 				res := HCLResult{
 					Device:     disk.DeviceName,
 					DeviceType: disk.DeviceType,
 					Instances:  1,
-					Certified:  "",
+					Certified:  certifiedStatus,
 					HCLLink:    hclURL,
 				}
 
@@ -105,6 +134,76 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		results = append(results, hostComp)
 	}
 	return results
+}
+
+// queryBroadcomAPI sends a POST request to the Broadcom JSON endpoint and parses the certification status.
+func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywords []string, targetRelease string) string {
+	type bcmRequest struct {
+		ProgramId string                   `json:"programId"`
+		Filters   []map[string]interface{} `json:"filters"`
+		Keyword   []string                 `json:"keyword"`
+		Date      map[string]interface{}   `json:"date"`
+	}
+
+	reqBody := bcmRequest{
+		ProgramId: programId,
+		Filters:   filters,
+		Keyword:   keywords,
+		Date:      map[string]interface{}{"startDate": nil, "endDate": nil},
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return "ERROR"
+	}
+
+	url := "https://compatibilityguide.broadcom.com/compguide/programs/viewResults?limit=20&page=1&sortBy=&sortType=ASC"
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil || resp.StatusCode != 200 {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return "ERROR"
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "ERROR"
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return "ERROR"
+	}
+
+	data, ok := result["data"].(map[string]interface{})
+	if !ok {
+		return "ERROR"
+	}
+
+	// If the database returns 0 matches for these IDs, it is definitely not certified
+	countFloat, ok := data["count"].(float64)
+	if !ok || countFloat == 0 {
+		return "FALSE"
+	}
+
+	// If we have matches, do an efficient string search across the payload to see if the target release is explicitly listed
+	bodyStr := string(bodyBytes)
+	if strings.Contains(bodyStr, targetRelease) {
+		return "TRUE"
+	}
+	
+	// SSDs often append the vSAN version (e.g., "ESXi 9.1 (vSAN 9.1)")
+	if programId == "ssd" && !strings.Contains(targetRelease, "vSAN") {
+		vsanVer := strings.Replace(targetRelease, "ESXi", "vSAN", 1)
+		vsanTarget := fmt.Sprintf("%s (%s)", targetRelease, vsanVer)
+		if strings.Contains(bodyStr, vsanTarget) {
+			return "TRUE"
+		}
+	}
+
+	return "FALSE"
 }
 
 // aggregateUnique flattens and deduplicates all results globally across the environment.
@@ -147,7 +246,6 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 		aggregatedResults = append(aggregatedResults, res)
 	}
 
-	// Sort the results alphabetically by Device Type, then by Device Name
 	sort.Slice(aggregatedResults, func(i, j int) bool {
 		if aggregatedResults[i].DeviceType == aggregatedResults[j].DeviceType {
 			return aggregatedResults[i].Device < aggregatedResults[j].Device
@@ -155,7 +253,6 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 		return aggregatedResults[i].DeviceType < aggregatedResults[j].DeviceType
 	})
 
-	// Wrap the aggregated results in a single, clean HostComponents block for the output writer
 	return []HostComponents{
 		{
 			Datacenter: "Global",
@@ -195,7 +292,7 @@ func buildSystemQuery(displayModel, searchKeyword, releaseVersion string) HCLRes
 		Device:     displayModel,
 		DeviceType: "system",
 		Instances:  1,
-		Certified:  "",
+		Certified:  "", // CPU/Systems currently skip the API verification
 		HCLLink:    "https://compatibilityguide.broadcom.com/search?" + params.Encode(),
 	}
 }
@@ -217,7 +314,7 @@ func buildCPUQuery(cpuModel, cpuId, releaseVersion string) HCLResult {
 		Device:     cpuModel,
 		DeviceType: "CPU",
 		Instances:  1,
-		Certified:  "",
+		Certified:  "", // CPU/Systems currently skip the API verification
 		HCLLink:    "https://compatibilityguide.broadcom.com/search?" + params.Encode(),
 	}
 }
