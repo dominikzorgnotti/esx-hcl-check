@@ -1,35 +1,61 @@
-name: goreleaser
+name: Build and Release Binaries
 
 on:
-  push:
-    tags:
-      - '*'
-
-permissions:
-  contents: write
+  release:
+    types: [created]
 
 jobs:
-  goreleaser:
+  build-and-upload:
+    name: Build for ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required for GitHub Actions to attach files to the release
+
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            ext: ""
+          - goos: windows
+            goarch: amd64
+            ext: ".exe"
+          - goos: darwin
+            goarch: arm64
+            ext: ""
+
     steps:
-      -
-        name: Checkout
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      -
-        name: Set up Go
-        uses: actions/setup-go@v6
-      -
-        name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          # either 'goreleaser' (default) or 'goreleaser-pro'
-          distribution: goreleaser
-          # 'latest', 'nightly', or a semver
-          version: '~> v2'
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Your GoReleaser Pro key, if you are using the 'goreleaser-pro' distribution
-          # GORELEASER_KEY: ${{ secrets.GORELEASER_KEY }}
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.26' # Adjust to your current Go version if needed
+
+    - name: Install dependencies
+      run: |
+        go mod init esx-hcl-check && go mod tidy
+
+    - name: Build Binary
+      run: |
+        # Define the output name based on the OS and Architecture
+        BINARY_NAME="esx-hcl-check-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+        
+        # Build the code for the specific matrix target
+        env GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -v -o $BINARY_NAME .
+
+    - name: Generate SHA256 Hash
+      run: |
+        BINARY_NAME="esx-hcl-check-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+        
+        # Calculate the hash and output it to a .sha256 text file
+        sha256sum $BINARY_NAME > ${BINARY_NAME}.sha256
+
+    - name: Upload Release Assets
+      uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: |
+          esx-hcl-check-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          esx-hcl-check-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}.sha256
