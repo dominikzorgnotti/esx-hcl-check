@@ -1,8 +1,8 @@
 # **esx-hcl-check**
 
-`esx-hcl-check` is a command-line tool designed for vSphere and VMware Cloud Foundation (VCF) administrators. It connects to a vCenter server, extracts the exact hardware inventory of your ESXi hosts, and maps those components to precise search queries on the Broadcom VMware Compatibility Guide.
+`esx-hcl-check` is a command-line tool designed for vSphere and VMware Cloud Foundation (VCF) administrators. It connects to a vCenter server, extracts the exact hardware inventory of your ESXi hosts, and automatically verifies those components against the Broadcom VMware Compatibility Guide API.
 
-Because Broadcom does not provide a public REST API for unauthenticated HCL queries, this tool automatically generates the exact URLs needed to verify your System chassis, CPU, and I/O devices (Network, Fibre Channel, RAID, GPUs). It natively handles complex tasks like extracting binary CPUID instruction sets for accurate processor matching and deduplicating PCI devices using hex-formatted Vendor, Device, and Sub-Device IDs (VID, DID, SSID).
+The tool natively handles complex extraction tasks such as parsing binary CPUID instruction sets, identifying PCI bus architectures to distinguish between standard HBAs and NVMe drives, and extracting underlying BIOS/Firmware and Driver versions directly from the hypervisor. It validates System chassis, Processors, I/O devices (Network, Fibre Channel, RAID, GPUs), and vSAN SSDs directly against Broadcom's backend API to provide a clear `TRUE` or `FALSE` certification status.
 
 ## **🛠️ Requirements for Building the Code**
 
@@ -17,14 +17,17 @@ To compile this code from source, you will need:
 
 Initialize the Go module and fetch the required dependencies:
 
-```
+```bash
 go mod init esx-hcl-check
 go mod tidy  
 ```
 
-2. Build the executable:
+Build the executable:
 
-   `go build \-o esx-hcl-check .`
+```bash
+   go build -o esx-hcl-check .
+```
+
 
 ## **🚀 Basic Usage (Connection Parameters)**
 
@@ -32,46 +35,63 @@ go mod tidy
 
 **Linux / macOS:**
 
-export GOVC\_URL="vcsa.yourdomain.com"  
-export GOVC\_USERNAME="administrator@vsphere.local"  
-export GOVC\_PASSWORD="YourSecurePassword\!"  
-export GOVC\_INSECURE=1
+```bash
+export GOVC_URL="vcsa.yourdomain.com"  
+export GOVC_USERNAME="administrator@vsphere.local"  
+export GOVC_PASSWORD="YourSecurePassword!"  
+export GOVC_INSECURE=1
+```
 
 **Windows (PowerShell):**
 
-$env:GOVC\_URL="vcsa.yourdomain.com"  
-$env:GOVC\_USERNAME="administrator@vsphere.local"  
-$env:GOVC\_PASSWORD="YourSecurePassword\!"  
-$env:GOVC\_INSECURE="1"
+```powershell
+$env:GOVC_URL="vcsa.yourdomain.com"  
+$env:GOVC_USERNAME="administrator@vsphere.local"  
+$env:GOVC_PASSWORD="YourSecurePassword!"  
+$env:GOVC_INSECURE="1"
+```
 
-Once your variables are set, simply run the tool:
+Once your variables are set, run the tool with the mandatory release parameter:
 
-./esx-hcl-check
+```bash
+./esx-hcl-check -release="ESXi 9.1"
+```
 
-## **⚙️ Optional Command Line Parameters**
+## **⚙️ Command Line Parameters**
 
 The tool provides several command-line flags to filter your scope and control the output format.
 
+```bash
 | Flag | Description | Default |
 | ----- | ----- | ----- |
-| `-release` | The target ESXi release version to validate compatibility against. | `"ESXi 9.1"` |
-| `-dc` | Target a specific Datacenter. Overrides the GOVC\_DATACENTER variable. | `""` (All Datacenters) |
-| `-cluster` | Target a specific Cluster. Overrides the GOVC\_CLUSTER variable. | `""` (All Clusters) |
+| `-release` | **[REQUIRED]** The target ESXi release version to validate compatibility against (e.g., "ESXi 9.1", "ESXi 8.0 U3"). Must match the Broadcom Product Release Version string. | *None* |
+| `-dc` | Target a specific Datacenter. Overrides the GOVC_DATACENTER variable. | `""` (All Datacenters) |
+| `-cluster` | Target a specific Cluster. Overrides the GOVC_CLUSTER variable. | `""` (All Clusters) |
 | `-unique` | Aggregates and deduplicates all hardware findings globally across all scanned hosts. | `false` |
-| `-json` | Outputs the final HCL evaluation results as a JSON payload instead of a text table. | `false` |
-| `-details` | Includes raw hardware identifiers (VID, DID, SSID, CPUID) in the JSON output payload. | `false` |
-| `-vsan` | **\[BETA\]** Extracts vSAN SSD NVMe drives. Work in progress, results may not map reliably. | `false` |
+| `-json` | Outputs the final HCL evaluation results as a JSON payload. Required to view extracted firmware and driver versions. | `false` |
+| `-details` | Includes raw hardware identifiers (VID, DID, SVID, SSID, CPUID) in the JSON output payload. *Automatically enables -json*. | `false` |
+| `-vsan` | **[BETA]** Extracts vSAN SSDs and NVMe drives and checks them against the vSAN HCL database. | `false` |
 | `-debugpci` | Bypasses I/O filters and dumps all unknown PCI devices into the raw JSON file for troubleshooting. | `false` |
 | `-vspherejson` | Path to save the raw hardware data extracted from vCenter (Phase 1). | OS Temp Directory |
 | `-nohcl` | Skips the Broadcom HCL validation phase entirely. Useful if you only want to extract the raw vSphere hardware JSON payload. | `false` |
+```
 
 ### **Usage Examples**
 
-**Check compatibility for an entire datacenter and aggregate the components globally:**
+**Check compatibility for an entire datacenter and aggregate the unique components globally:**
 
-`./esx-hcl-check -dc="Datacenter-London" -unique`
+```bash
+./esx-hcl-check -release="ESXi 9.1" -dc="Datacenter-London" -unique
+```
 
-**Extract detailed troubleshooting hardware and vSAN disks to a JSON file without HCL URLs:**
+**Export full detailed hardware JSON (including exact PCI hex IDs, firmwares, and drivers) for CI/CD pipelines:**
 
-`./esx-hcl-check -nohcl -vsan -debugpci -vspherejson="/opt/reports/debug-hardware.json"`
+```bash
+./esx-hcl-check -release="ESXi 8.0 U3" -details -vsan
+```
 
+**Extract hardware to a specific JSON file without hitting the Broadcom API:**
+
+```bash
+./esx-hcl-check -release="ESXi 9.1" -nohcl -vspherejson="/opt/reports/raw-hardware.json"
+```
