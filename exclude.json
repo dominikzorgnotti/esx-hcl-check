@@ -1,0 +1,19 @@
+{
+  "names": [
+    "Lewisburg SATA AHCI Controller",
+    "VMware NVMe Controller",
+    "iLO5 VGA"
+  ],
+  "regex_names": [
+    "Lewisburg.*",
+    "(?i)^intel.*usb.*"
+  ],
+  "ids": [
+    {
+      "vid": "15b3",
+      "did": "1017",
+      "svid": "15b3",
+      "ssid": "0091"
+    }
+  ]
+}
