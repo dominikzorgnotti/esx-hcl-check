@@ -146,7 +146,6 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					}
 					filters := []map[string]interface{}{}
 					if disk.Vendor != "" {
-						// FIXED: Removed extra {} from the map initialization
 						filters = append(filters, map[string]interface{}{"displayKey": "partnerName", "filterValues": []string{disk.Vendor}})
 					}
 					res.Certified = queryBroadcomAPI("vsan", filters, []string{disk.Model}, releaseVersion)
@@ -169,7 +168,6 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 func loadVsanHCL(path string) (*VsanOfflineDB, error) {
 	needsDownload := false
 	
-	// FIXED: Ignore fileInfo, just check if there's an error
 	_, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		needsDownload = true
@@ -234,6 +232,9 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 			if res.DriverName != "" { res.DriverCertified = "FALSE" }
 			if res.Firmware != "" { res.FirmwareCertified = "FALSE" }
 
+			cleanHostDrvVer := strings.TrimSpace(res.DriverVer)
+			cleanHostFw := strings.TrimSpace(res.Firmware)
+
 			// Iterate over drivers in the release
 			for drvName, drvObj := range relData.(map[string]interface{}) {
 				if drvName == "vsanSupport" || drvName == "deviceSupport" { continue }
@@ -241,18 +242,22 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 				for drvVer, drvDetails := range drvObj.(map[string]interface{}) {
 					res.SupportedDrivers = append(res.SupportedDrivers, fmt.Sprintf("%s %s", drvName, drvVer))
 					
-					// Check Driver Match
-					if strings.Contains(res.DriverName, drvName) && res.DriverVer == drvVer {
-						res.DriverCertified = "TRUE"
+					// IMPROVED PATTERN MATCHING FOR DRIVERS
+					// Extract the upstream base version by stripping the '-1vmw...' VMware build suffix
+					hclBaseDrvVer := strings.Split(drvVer, "-")[0]
+					if strings.Contains(strings.ToLower(res.DriverName), strings.ToLower(drvName)) {
+						if strings.EqualFold(cleanHostDrvVer, drvVer) || strings.EqualFold(cleanHostDrvVer, hclBaseDrvVer) {
+							res.DriverCertified = "TRUE"
+						}
 					}
 
-					// Check Firmware Match
+					// IMPROVED PATTERN MATCHING FOR FIRMWARES
 					if fwList, ok := drvDetails.(map[string]interface{})["firmwares"].([]interface{}); ok {
 						for _, fwItem := range fwList {
-							fwStr := fmt.Sprintf("%v", fwItem.(map[string]interface{})["firmware"])
+							fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwItem.(map[string]interface{})["firmware"]))
 							res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
 							
-							if res.Firmware == fwStr {
+							if cleanHostFw != "" && strings.EqualFold(cleanHostFw, fwStr) {
 								res.FirmwareCertified = "TRUE"
 							}
 						}
@@ -283,13 +288,15 @@ func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCL
 
 			res.Certified = "TRUE"
 			if res.Firmware != "" { res.FirmwareCertified = "FALSE" }
+			cleanHostFw := strings.TrimSpace(res.Firmware)
 
 			if fwList, ok := relData.([]interface{}); ok {
 				for _, fwItem := range fwList {
-					fwStr := fmt.Sprintf("%v", fwItem.(map[string]interface{})["firmware"])
+					fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwItem.(map[string]interface{})["firmware"]))
 					res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
 					
-					if res.Firmware == fwStr {
+					// IMPROVED PATTERN MATCHING FOR DISK FIRMWARES
+					if cleanHostFw != "" && strings.EqualFold(cleanHostFw, fwStr) {
 						res.FirmwareCertified = "TRUE"
 					}
 				}
