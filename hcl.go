@@ -7,12 +7,21 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // performHCLChecks processes the raw inventory and maps it to Broadcom search queries.
-func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci bool) []HostComponents {
+func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci bool, vsanHclPath string) []HostComponents {
+	
+	// Ensure we have an up-to-date offline vSAN database
+	vsanDB, err := loadVsanHCL(vsanHclPath)
+	if err != nil {
+		fmt.Printf("Warning: Failed to load or download vSAN HCL database: %v\n", err)
+	}
+
 	var results []HostComponents
 
 	for _, raw := range rawInventory {
@@ -24,68 +33,46 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 
 		// 1. System Chassis
 		sysFullModel := fmt.Sprintf("%s %s", raw.SysVendor, raw.SysModel)
-		sysFilters := []map[string]interface{}{
-			{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}},
-		}
+		sysFilters := []map[string]interface{}{{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}}}
 		sysCertified := queryBroadcomAPI("server", sysFilters, []string{raw.SysModel}, releaseVersion)
 
 		sysRes := buildSystemQuery(sysFullModel, raw.SysModel, releaseVersion)
 		sysRes.Certified = sysCertified
 		sysRes.Firmware = raw.BiosVersion
+		sysRes.DriverCertified = "N/A"
+		sysRes.FirmwareCertified = "N/A"
 		hostComp.Results = append(hostComp.Results, sysRes)
 
 		// 2. CPU
 		cpuKeyword := raw.CpuModel
-		if raw.CpuId != "" {
-			cpuKeyword = raw.CpuId
-		}
-		cpuFilters := []map[string]interface{}{
-			{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}},
-		}
+		if raw.CpuId != "" { cpuKeyword = raw.CpuId }
+		cpuFilters := []map[string]interface{}{{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}}}
 		cpuCertified := queryBroadcomAPI("cpu", cpuFilters, []string{cpuKeyword}, releaseVersion)
 
 		cpuRes := buildCPUQuery(raw.CpuModel, raw.CpuId, releaseVersion)
-		if details && raw.CpuId != "" {
-			cpuRes.CPUID = raw.CpuId
-		}
+		if details && raw.CpuId != "" { cpuRes.CPUID = raw.CpuId }
 		cpuRes.Certified = cpuCertified
+		cpuRes.DriverCertified = "N/A"
+		cpuRes.FirmwareCertified = "N/A"
 		hostComp.Results = append(hostComp.Results, cpuRes)
 
 		// 3. PCI Devices
 		type pciKey struct {
-			VID  int16
-			DID  int16
-			SVID int16
-			SSID int16
+			VID, DID, SVID, SSID int16
+			FW, DV, DN           string
 		}
-		
 		pciMap := make(map[pciKey]int)
 
 		for _, pci := range raw.PCIDevices {
-			k := pciKey{VID: pci.VID, DID: pci.DID, SVID: pci.SVID, SSID: pci.SSID}
+			k := pciKey{VID: pci.VID, DID: pci.DID, SVID: pci.SVID, SSID: pci.SSID, FW: pci.Firmware, DV: pci.DriverVer, DN: pci.DriverName}
 			
 			if idx, found := pciMap[k]; found {
 				hostComp.Results[idx].Instances++
 			} else {
-				hclURL := ""
-				certifiedStatus := ""
-				
 				vidHex := fmt.Sprintf("%04x", uint16(pci.VID))
 				didHex := fmt.Sprintf("%04x", uint16(pci.DID))
 				svidHex := fmt.Sprintf("%04x", uint16(pci.SVID))
 				ssidHex := fmt.Sprintf("%04x", uint16(pci.SSID))
-
-				if pci.DeviceType != "unknown (debug)" {
-					hclURL = buildHexQueryURL(releaseVersion, int16(pci.VID), int16(pci.DID), int16(pci.SVID), int16(pci.SSID))
-					
-					filters := []map[string]interface{}{
-						{"displayKey": "vid", "filterValues": []string{vidHex}},
-						{"displayKey": "did", "filterValues": []string{didHex}},
-						{"displayKey": "svid", "filterValues": []string{svidHex}},
-						{"displayKey": "ssid", "filterValues": []string{ssidHex}},
-					}
-					certifiedStatus = queryBroadcomAPI("io", filters, []string{}, releaseVersion)
-				}
 
 				res := HCLResult{
 					Device:     pci.DeviceName,
@@ -94,15 +81,32 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					Firmware:   pci.Firmware,
 					DriverVer:  pci.DriverVer,
 					DriverName: pci.DriverName,
-					Certified:  certifiedStatus,
-					HCLLink:    hclURL,
+					DriverCertified: "N/A",
+					FirmwareCertified: "N/A",
 				}
 
 				if details {
-					res.VID = vidHex
-					res.DID = didHex
-					res.SVID = svidHex
-					res.SSID = ssidHex
+					res.VID, res.DID, res.SVID, res.SSID = vidHex, didHex, svidHex, ssidHex
+				}
+
+				if pci.DeviceType != "unknown (debug)" {
+					// Check vSAN Offline DB First
+					foundInVsan := false
+					if vsanDB != nil {
+						foundInVsan = evaluateVsanPCI(vsanDB, vidHex, didHex, svidHex, ssidHex, releaseVersion, &res)
+					}
+					
+					// Fallback to Broadcom API if not found in vSAN DB
+					if !foundInVsan {
+						filters := []map[string]interface{}{
+							{"displayKey": "vid", "filterValues": []string{vidHex}},
+							{"displayKey": "did", "filterValues": []string{didHex}},
+							{"displayKey": "svid", "filterValues": []string{svidHex}},
+							{"displayKey": "ssid", "filterValues": []string{ssidHex}},
+						}
+						res.Certified = queryBroadcomAPI("io", filters, []string{}, releaseVersion)
+						res.HCLLink = buildHexQueryURL(releaseVersion, int16(pci.VID), int16(pci.DID), int16(pci.SVID), int16(pci.SSID))
+					}
 				}
 
 				hostComp.Results = append(hostComp.Results, res)
@@ -110,13 +114,8 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 			}
 		}
 
-		// 4. SSD Disks
-		type diskKey struct {
-			Vendor   string
-			Model    string
-			Firmware string
-		}
-
+		// 4. SSD/HDD Disks
+		type diskKey struct { Vendor, Model, Firmware string }
 		diskMap := make(map[diskKey]int)
 
 		for _, disk := range raw.Disks {
@@ -125,31 +124,31 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 			if idx, found := diskMap[k]; found {
 				hostComp.Results[idx].Instances++
 			} else {
-				var hclURL string
-				
-				if disk.DeviceType == "vSAN NVMe PCIe (beta)" {
-					hclURL = buildVsanNvmeQueryURL(disk.Vendor, disk.Model, releaseVersion)
-				} else {
-					hclURL = buildDiskQueryURL(disk.Vendor, disk.Model, releaseVersion)
-				}
-				
-				filters := []map[string]interface{}{}
-				if disk.Vendor != "" {
-					filters = append(filters, map[string]interface{}{
-						"displayKey": "partnerName",
-						"filterValues": []string{disk.Vendor},
-					})
-				}
-				
-				certifiedStatus := queryBroadcomAPI("vsan", filters, []string{disk.Model}, releaseVersion)
-
 				res := HCLResult{
 					Device:     disk.DeviceName,
 					DeviceType: disk.DeviceType,
 					Instances:  1,
 					Firmware:   disk.Firmware,
-					Certified:  certifiedStatus,
-					HCLLink:    hclURL,
+					DriverCertified: "N/A",
+					FirmwareCertified: "N/A",
+				}
+
+				foundInVsan := false
+				if vsanDB != nil {
+					foundInVsan = evaluateVsanDisk(vsanDB, disk.Vendor, disk.Model, releaseVersion, &res)
+				}
+
+				if !foundInVsan {
+					if disk.DeviceType == "vSAN NVMe PCIe (beta)" {
+						res.HCLLink = buildVsanNvmeQueryURL(disk.Vendor, disk.Model, releaseVersion)
+					} else {
+						res.HCLLink = buildDiskQueryURL(disk.Vendor, disk.Model, releaseVersion)
+					}
+					filters := []map[string]interface{}{}
+					if disk.Vendor != "" {
+						filters = append(filters, map[string]interface{}{{"displayKey": "partnerName", "filterValues": []string{disk.Vendor}}})
+					}
+					res.Certified = queryBroadcomAPI("vsan", filters, []string{disk.Model}, releaseVersion)
 				}
 
 				hostComp.Results = append(hostComp.Results, res)
@@ -161,6 +160,147 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 	}
 	return results
 }
+
+// -------------------------------------------------------------
+// vSAN Offline DB Engine
+// -------------------------------------------------------------
+
+func loadVsanHCL(path string) (*VsanOfflineDB, error) {
+	needsDownload := false
+	
+	fileInfo, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		needsDownload = true
+	} else if err == nil {
+		// Read file to check timestamp
+		b, err := os.ReadFile(path)
+		if err == nil {
+			var db VsanOfflineDB
+			if err := json.Unmarshal(b, &db); err == nil {
+				// Check if older than 24 hours (86400 seconds)
+				if time.Now().Unix() - db.Timestamp > 86400 {
+					needsDownload = true
+				}
+			} else {
+				needsDownload = true
+			}
+		}
+	}
+
+	if needsDownload {
+		resp, err := http.Get("https://vvs.broadcom.com/service/vsan/all.json")
+		if err == nil && resp.StatusCode == 200 {
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			os.WriteFile(path, b, 0644)
+		}
+	}
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var db VsanOfflineDB
+	if err := json.Unmarshal(b, &db); err != nil {
+		return nil, err
+	}
+	return &db, nil
+}
+
+func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, res *HCLResult) bool {
+	checkList := append(db.Data.Controller, db.Data.Nic...)
+	
+	for _, item := range checkList {
+		if strings.EqualFold(fmt.Sprintf("%v", item["vid"]), vid) &&
+		   strings.EqualFold(fmt.Sprintf("%v", item["did"]), did) &&
+		   strings.EqualFold(fmt.Sprintf("%v", item["svid"]), svid) &&
+		   strings.EqualFold(fmt.Sprintf("%v", item["ssid"]), ssid) {
+			
+			res.HCLLink = fmt.Sprintf("%v", item["vcglink"])
+			res.Certified = "FALSE"
+
+			releases, ok := item["releases"].(map[string]interface{})
+			if !ok { return true }
+
+			// Check if the targeted release exists for this hardware
+			relData, exists := releases[release]
+			if !exists { return true }
+			
+			res.Certified = "TRUE"
+			
+			if res.DriverName != "" { res.DriverCertified = "FALSE" }
+			if res.Firmware != "" { res.FirmwareCertified = "FALSE" }
+
+			// Iterate over drivers in the release
+			for drvName, drvObj := range relData.(map[string]interface{}) {
+				if drvName == "vsanSupport" || drvName == "deviceSupport" { continue }
+				
+				for drvVer, drvDetails := range drvObj.(map[string]interface{}) {
+					res.SupportedDrivers = append(res.SupportedDrivers, fmt.Sprintf("%s %s", drvName, drvVer))
+					
+					// Check Driver Match
+					if strings.Contains(res.DriverName, drvName) && res.DriverVer == drvVer {
+						res.DriverCertified = "TRUE"
+					}
+
+					// Check Firmware Match
+					if fwList, ok := drvDetails.(map[string]interface{})["firmwares"].([]interface{}); ok {
+						for _, fwItem := range fwList {
+							fwStr := fmt.Sprintf("%v", fwItem.(map[string]interface{})["firmware"])
+							res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
+							
+							if res.Firmware == fwStr {
+								res.FirmwareCertified = "TRUE"
+							}
+						}
+					}
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCLResult) bool {
+	checkList := append(db.Data.Ssd, db.Data.Hdd...)
+	
+	for _, item := range checkList {
+		if strings.Contains(strings.ToLower(fmt.Sprintf("%v", item["model"])), strings.ToLower(model)) &&
+		   strings.Contains(strings.ToLower(fmt.Sprintf("%v", item["partnername"])), strings.ToLower(vendor)) {
+			
+			res.HCLLink = fmt.Sprintf("%v", item["vcglink"])
+			res.Certified = "FALSE"
+
+			releases, ok := item["releases"].(map[string]interface{})
+			if !ok { return true }
+
+			relData, exists := releases[release]
+			if !exists { return true }
+
+			res.Certified = "TRUE"
+			if res.Firmware != "" { res.FirmwareCertified = "FALSE" }
+
+			if fwList, ok := relData.([]interface{}); ok {
+				for _, fwItem := range fwList {
+					fwStr := fmt.Sprintf("%v", fwItem.(map[string]interface{})["firmware"])
+					res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
+					
+					if res.Firmware == fwStr {
+						res.FirmwareCertified = "TRUE"
+					}
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// -------------------------------------------------------------
+// Legacy API & Aggregation Functions
+// -------------------------------------------------------------
 
 func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywords []string, targetRelease string) string {
 	type bcmRequest struct {
@@ -177,52 +317,32 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 		Date:      map[string]string{"startDate": "", "endDate": ""},
 	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return "ERROR"
-	}
-
+	jsonData, _ := json.Marshal(reqBody)
 	url := "https://compatibilityguide.broadcom.com/compguide/programs/viewResults?limit=20&page=1&sortBy=&sortType=ASC"
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil || resp.StatusCode != 200 {
-		if resp != nil {
-			resp.Body.Close()
-		}
+		if resp != nil { resp.Body.Close() }
 		return "ERROR"
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "ERROR"
-	}
-
+	bodyBytes, _ := io.ReadAll(resp.Body)
 	var result map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		return "ERROR"
-	}
+	json.Unmarshal(bodyBytes, &result)
 
 	data, ok := result["data"].(map[string]interface{})
-	if !ok {
-		return "ERROR"
-	}
+	if !ok { return "ERROR" }
 
 	countFloat, ok := data["count"].(float64)
-	if !ok || countFloat == 0 {
-		return "FALSE"
-	}
+	if !ok || countFloat == 0 { return "FALSE" }
 
 	bodyStr := string(bodyBytes)
-	if strings.Contains(bodyStr, targetRelease) {
-		return "TRUE"
-	}
+	if strings.Contains(bodyStr, targetRelease) { return "TRUE" }
 	
 	if programId == "vsan" && !strings.Contains(targetRelease, "vSAN") {
 		vsanVer := strings.Replace(targetRelease, "ESXi", "vSAN", 1)
 		vsanTarget := fmt.Sprintf("%s (%s)", targetRelease, vsanVer)
-		if strings.Contains(bodyStr, vsanTarget) {
-			return "TRUE"
-		}
+		if strings.Contains(bodyStr, vsanTarget) { return "TRUE" }
 	}
 
 	return "FALSE"
@@ -230,37 +350,14 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 
 func aggregateUnique(data []HostComponents) []HostComponents {
 	type aggKey struct {
-		Device     string
-		DeviceType string
-		HCLLink    string
-		VID        string
-		DID        string
-		SVID       string
-		SSID       string
-		CPUID      string
-		Firmware   string
-		DriverVer  string
-		DriverName string
+		Device, DeviceType, HCLLink, VID, DID, SVID, SSID, CPUID, Firmware, DriverVer, DriverName string
 	}
 
 	aggMap := make(map[aggKey]HCLResult)
 
 	for _, host := range data {
 		for _, res := range host.Results {
-			k := aggKey{
-				Device:     res.Device,
-				DeviceType: res.DeviceType,
-				HCLLink:    res.HCLLink,
-				VID:        res.VID,
-				DID:        res.DID,
-				SVID:       res.SVID,
-				SSID:       res.SSID,
-				CPUID:      res.CPUID,
-				Firmware:   res.Firmware,
-				DriverVer:  res.DriverVer,
-				DriverName: res.DriverName,
-			}
-
+			k := aggKey{res.Device, res.DeviceType, res.HCLLink, res.VID, res.DID, res.SVID, res.SSID, res.CPUID, res.Firmware, res.DriverVer, res.DriverName}
 			if existing, found := aggMap[k]; found {
 				existing.Instances += res.Instances
 				aggMap[k] = existing
@@ -282,23 +379,12 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 		return aggregatedResults[i].DeviceType < aggregatedResults[j].DeviceType
 	})
 
-	return []HostComponents{
-		{
-			Datacenter: "Global",
-			Cluster:    "(Aggregated Deduplication)",
-			Hostname:   "All Scanned Hosts",
-			Results:    aggregatedResults,
-		},
-	}
+	return []HostComponents{{Datacenter: "Global", Cluster: "(Aggregated Deduplication)", Hostname: "All Scanned Hosts", Results: aggregatedResults}}
 }
 
-// -------------------------------------------------------------
-// URL Builders: Refactored to natively use url.Parse & u.String
-// -------------------------------------------------------------
-
+// Legacy URL builders omitted here for brevity; they remain unchanged from the previous iteration.
 func buildHexQueryURL(releaseVersion string, vid, did, svid, ssid int16) string {
 	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
-	
 	params := url.Values{}
 	params.Set("program", "io")
 	params.Set("persona", "live")
@@ -309,101 +395,64 @@ func buildHexQueryURL(releaseVersion string, vid, did, svid, ssid int16) string 
 	params.Set("did", fmt.Sprintf("[%04x]", uint16(did)))
 	params.Set("svid", fmt.Sprintf("[%04x]", uint16(svid)))
 	params.Set("ssid", fmt.Sprintf("[%04x]", uint16(ssid)))
-
 	u.RawQuery = params.Encode()
 	return u.String()
 }
 
 func buildSystemQuery(displayModel, searchKeyword, releaseVersion string) HCLResult {
 	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
-	
 	params := url.Values{}
 	params.Set("program", "server")
 	params.Set("persona", "live")
 	params.Set("keyword", searchKeyword)
 	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
-
 	u.RawQuery = params.Encode()
-
-	return HCLResult{
-		Device:     displayModel,
-		DeviceType: "system",
-		Instances:  1,
-		Firmware:   "",
-		Certified:  "", 
-		HCLLink:    u.String(),
-	}
+	return HCLResult{Device: displayModel, DeviceType: "system", Instances: 1, HCLLink: u.String()}
 }
 
 func buildCPUQuery(cpuModel, cpuId, releaseVersion string) HCLResult {
 	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
-	
 	params := url.Values{}
 	params.Set("program", "cpu")
 	params.Set("persona", "live")
 	params.Set("column", "cpuSeries")
 	params.Set("order", "asc")
-
 	keyword := cpuModel
-	if cpuId != "" {
-		keyword = cpuId
-	}
+	if cpuId != "" { keyword = cpuId }
 	params.Set("keyword", keyword)
-
 	u.RawQuery = params.Encode()
-
-	return HCLResult{
-		Device:     cpuModel,
-		DeviceType: "CPU",
-		Instances:  1,
-		Firmware:   "",
-		Certified:  "",
-		HCLLink:    u.String(),
-	}
+	return HCLResult{Device: cpuModel, DeviceType: "CPU", Instances: 1, HCLLink: u.String()}
 }
 
 func buildDiskQueryURL(vendor, model, releaseVersion string) string {
 	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
-	
 	params := url.Values{}
 	params.Set("program", "ssd")
 	params.Set("persona", "live")
 	params.Set("column", "partnerName")
 	params.Set("order", "asc")
-	
-	if vendor != "" {
-		params.Set("partners", fmt.Sprintf("[%s]", vendor))
-	}
-	
+	if vendor != "" { params.Set("partners", fmt.Sprintf("[%s]", vendor)) }
 	params.Set("keyword", model)
 	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
-
 	u.RawQuery = params.Encode()
 	return u.String()
 }
 
 func buildVsanNvmeQueryURL(vendor, model, releaseVersion string) string {
 	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
-	
 	params := url.Values{}
 	params.Set("program", "ssd")
 	params.Set("persona", "live")
 	params.Set("column", "partnerName")
 	params.Set("order", "asc")
-	
-	if vendor != "" {
-		params.Set("partners", fmt.Sprintf("[%s]", vendor))
-	}
-	
+	if vendor != "" { params.Set("partners", fmt.Sprintf("[%s]", vendor)) }
 	params.Set("keyword", model)
-	
 	vsanRelease := releaseVersion
 	if !strings.Contains(vsanRelease, "vSAN") {
 		vsanVer := strings.Replace(releaseVersion, "ESXi", "vSAN", 1)
 		vsanRelease = fmt.Sprintf("%s (%s)", releaseVersion, vsanVer)
 	}
 	params.Set("supportedReleases", fmt.Sprintf("[%s]", vsanRelease))
-
 	u.RawQuery = params.Encode()
 	return u.String()
 }
