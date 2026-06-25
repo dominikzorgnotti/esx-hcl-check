@@ -146,7 +146,8 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					}
 					filters := []map[string]interface{}{}
 					if disk.Vendor != "" {
-						filters = append(filters, map[string]interface{}{{"displayKey": "partnerName", "filterValues": []string{disk.Vendor}}})
+						// FIXED: Removed extra {} from the map initialization
+						filters = append(filters, map[string]interface{}{"displayKey": "partnerName", "filterValues": []string{disk.Vendor}})
 					}
 					res.Certified = queryBroadcomAPI("vsan", filters, []string{disk.Model}, releaseVersion)
 				}
@@ -168,7 +169,8 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 func loadVsanHCL(path string) (*VsanOfflineDB, error) {
 	needsDownload := false
 	
-	fileInfo, err := os.Stat(path)
+	// FIXED: Ignore fileInfo, just check if there's an error
+	_, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		needsDownload = true
 	} else if err == nil {
@@ -318,8 +320,8 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 	}
 
 	jsonData, _ := json.Marshal(reqBody)
-	url := "https://compatibilityguide.broadcom.com/compguide/programs/viewResults?limit=20&page=1&sortBy=&sortType=ASC"
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	urlStr := "https://compatibilityguide.broadcom.com/compguide/programs/viewResults?limit=20&page=1&sortBy=&sortType=ASC"
+	resp, err := http.Post(urlStr, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil || resp.StatusCode != 200 {
 		if resp != nil { resp.Body.Close() }
 		return "ERROR"
@@ -382,7 +384,6 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 	return []HostComponents{{Datacenter: "Global", Cluster: "(Aggregated Deduplication)", Hostname: "All Scanned Hosts", Results: aggregatedResults}}
 }
 
-// Legacy URL builders omitted here for brevity; they remain unchanged from the previous iteration.
 func buildHexQueryURL(releaseVersion string, vid, did, svid, ssid int16) string {
 	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
 	params := url.Values{}
