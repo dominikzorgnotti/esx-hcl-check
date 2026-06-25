@@ -20,9 +20,12 @@ func main() {
 		noHCL       = flag.Bool("nohcl", false, "Skip the HCL check phase and only collect vSphere data")
 		detailsOut  = flag.Bool("details", false, "Include unique IDs (VID, DID, SSID, CPUID) in the JSON output")
 		debugPci    = flag.Bool("debugpci", false, "Bypass PCI filters and dump all raw PCI devices into the JSON file for troubleshooting")
-		vsanBeta    = flag.Bool("vsan", false, "BETA: Extract vSAN SSD disks (Work in progress, results may not be reliable)")
+		vsanBeta    = flag.Bool("vsan", false, "BETA: Extract vSAN SSD disks")
 		uniqueOut   = flag.Bool("unique", false, "Aggregate and deduplicate output across all hosts globally")
 		excludeFile = flag.String("exclude", "exclude.json", "Path to the exclude JSON file to filter out specific devices")
+		vsanHclFile = flag.String("vsanhcl", "vsan-offline-hcl.json", "Path to the local vSAN HCL offline JSON database")
+		unsupported = flag.Bool("unsupported", false, "Filter output to ONLY show hardware that is not certified")
+		mismatch    = flag.Bool("mismatch", false, "Filter output to ONLY show hardware that is certified but has a driver/firmware mismatch")
 	)
 	flag.Parse()
 
@@ -36,28 +39,17 @@ func main() {
 		*jsonOutput = true
 	}
 
-	// Load and parse the exclude rules
+	// Load Exclude Rules
 	var excludeCfg ExcludeConfig
 	if *excludeFile != "" {
 		if b, err := os.ReadFile(*excludeFile); err == nil {
-			if err := json.Unmarshal(b, &excludeCfg); err != nil {
-				log.Printf("Warning: Failed to parse exclude file %s: %v\n", *excludeFile, err)
-			} else {
-				if !*jsonOutput {
-					fmt.Printf("# Loaded exclude rules from %s\n", *excludeFile)
-				}
-				// Pre-compile the regex statements for efficiency
+			if err := json.Unmarshal(b, &excludeCfg); err == nil {
 				for _, expr := range excludeCfg.RegexNames {
 					if re, err := regexp.Compile(expr); err == nil {
 						excludeCfg.CompiledRegexes = append(excludeCfg.CompiledRegexes, re)
-					} else {
-						log.Printf("Warning: Invalid regex '%s' in exclude file: %v\n", expr, err)
 					}
 				}
 			}
-		} else if *excludeFile != "exclude.json" {
-			// Only throw a warning if the user explicitly provided a filename that wasn't found
-			log.Printf("Warning: Could not read exclude file %s: %v\n", *excludeFile, err)
 		}
 	}
 
@@ -73,10 +65,6 @@ func main() {
 	
 	if !*jsonOutput {
 		fmt.Printf("# Connecting to %s ...\n", client.Client.URL().Host)
-		if *vsanBeta {
-			fmt.Println("⚠️  NOTE: vSAN disk extraction (-vsan) is a BETA feature in work and progress. Results will not be reliable.")
-		}
-		fmt.Println("ℹ️  NOTE: The text output displays a minimized view. Run with -json to see full details (firmware, drivers, etc.).")
 		fmt.Println("# Collecting inventory and hardware data...")
 	}
 
@@ -85,7 +73,6 @@ func main() {
 		client.Logout(ctx)
 		log.Fatalf("Error discovering inventory: %v", err)
 	}
-	
 	client.Logout(ctx)
 
 	savedPath, err := saveRawInventory(rawInventory, *vsphereJson)
@@ -93,25 +80,21 @@ func main() {
 		log.Fatalf("Failed to save raw inventory JSON: %v", err)
 	}
 
-	if !*jsonOutput {
-		fmt.Printf("# Raw inventory saved to: %s\n\n", savedPath)
-	}
-
 	if *noHCL {
-		if !*jsonOutput {
-			fmt.Println("Skipping HCL validation due to -nohcl flag. Exiting.")
-		}
 		return
 	}
 
 	// ---------------------------------------------------------
-	// PHASE 2: HCL Verification
+	// PHASE 2: HCL Verification (API + vSAN DB)
 	// ---------------------------------------------------------
-	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci)
+	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci, *vsanHclFile)
 
 	if *uniqueOut {
 		hclResults = aggregateUnique(hclResults)
 	}
+
+	// Apply Filters
+	hclResults = applyFilters(hclResults, *unsupported, *mismatch)
 
 	// ---------------------------------------------------------
 	// PHASE 3: Output Formatting
@@ -121,4 +104,27 @@ func main() {
 	} else {
 		printText(hclResults)
 	}
+}
+
+func applyFilters(data []HostComponents, showUnsupported, showMismatch bool) []HostComponents {
+	if !showUnsupported && !showMismatch {
+		return data
+	}
+
+	var filtered []HostComponents
+	for _, host := range data {
+		var keepRes []HCLResult
+		for _, res := range host.Results {
+			if showUnsupported && res.Certified == "FALSE" {
+				keepRes = append(keepRes, res)
+			} else if showMismatch && res.Certified == "TRUE" && (res.DriverCertified == "FALSE" || res.FirmwareCertified == "FALSE") {
+				keepRes = append(keepRes, res)
+			}
+		}
+		if len(keepRes) > 0 {
+			host.Results = keepRes
+			filtered = append(filtered, host)
+		}
+	}
+	return filtered
 }
