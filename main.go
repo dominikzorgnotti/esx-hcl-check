@@ -80,6 +80,11 @@ func main() {
 		log.Fatalf("Failed to save raw inventory JSON: %v", err)
 	}
 
+	// FIXED: Restored the savedPath print statement to clear the unused variable error
+	if !*jsonOutput {
+		fmt.Printf("# Raw inventory saved to: %s\n\n", savedPath)
+	}
+
 	if *noHCL {
 		return
 	}
