@@ -145,8 +145,11 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 						res.HCLLink = buildDiskQueryURL(disk.Vendor, disk.Model, releaseVersion)
 					}
 					filters := []map[string]interface{}{}
-					if disk.Vendor != "" {
-						filters = append(filters, map[string]interface{}{"displayKey": "partnerName", "filterValues": []string{disk.Vendor}})
+					cleanVen := strings.TrimSpace(disk.Vendor)
+					
+					// FIX: Do not pass generic "NVMe" to the Broadcom API to prevent HTTP 400 Bad Request errors
+					if cleanVen != "" && !strings.EqualFold(cleanVen, "NVMe") {
+						filters = append(filters, map[string]interface{}{"displayKey": "partnerName", "filterValues": []string{cleanVen}})
 					}
 					res.Certified = queryBroadcomAPI("vsan", filters, []string{disk.Model}, releaseVersion)
 				}
@@ -172,12 +175,10 @@ func loadVsanHCL(path string) (*VsanOfflineDB, error) {
 	if os.IsNotExist(err) {
 		needsDownload = true
 	} else if err == nil {
-		// Read file to check timestamp
 		b, err := os.ReadFile(path)
 		if err == nil {
 			var db VsanOfflineDB
 			if err := json.Unmarshal(b, &db); err == nil {
-				// Check if older than 24 hours (86400 seconds)
 				if time.Now().Unix() - db.Timestamp > 86400 {
 					needsDownload = true
 				}
@@ -223,7 +224,6 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 			releases, ok := item["releases"].(map[string]interface{})
 			if !ok { return true }
 
-			// Check if the targeted release exists for this hardware
 			relData, exists := releases[release]
 			if !exists { return true }
 			
@@ -235,15 +235,12 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 			cleanHostDrvVer := strings.TrimSpace(res.DriverVer)
 			cleanHostFw := strings.TrimSpace(res.Firmware)
 
-			// Iterate over drivers in the release
 			for drvName, drvObj := range relData.(map[string]interface{}) {
 				if drvName == "vsanSupport" || drvName == "deviceSupport" { continue }
 				
 				for drvVer, drvDetails := range drvObj.(map[string]interface{}) {
 					res.SupportedDrivers = append(res.SupportedDrivers, fmt.Sprintf("%s %s", drvName, drvVer))
 					
-					// IMPROVED PATTERN MATCHING FOR DRIVERS
-					// Extract the upstream base version by stripping the '-1vmw...' VMware build suffix
 					hclBaseDrvVer := strings.Split(drvVer, "-")[0]
 					if strings.Contains(strings.ToLower(res.DriverName), strings.ToLower(drvName)) {
 						if strings.EqualFold(cleanHostDrvVer, drvVer) || strings.EqualFold(cleanHostDrvVer, hclBaseDrvVer) {
@@ -251,216 +248,9 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 						}
 					}
 
-					// IMPROVED PATTERN MATCHING FOR FIRMWARES
 					if fwList, ok := drvDetails.(map[string]interface{})["firmwares"].([]interface{}); ok {
 						for _, fwItem := range fwList {
 							fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwItem.(map[string]interface{})["firmware"]))
 							res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
 							
-							if cleanHostFw != "" && strings.EqualFold(cleanHostFw, fwStr) {
-								res.FirmwareCertified = "TRUE"
-							}
-						}
-					}
-				}
-			}
-			return true
-		}
-	}
-	return false
-}
-
-func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCLResult) bool {
-	checkList := append(db.Data.Ssd, db.Data.Hdd...)
-	
-	for _, item := range checkList {
-		if strings.Contains(strings.ToLower(fmt.Sprintf("%v", item["model"])), strings.ToLower(model)) &&
-		   strings.Contains(strings.ToLower(fmt.Sprintf("%v", item["partnername"])), strings.ToLower(vendor)) {
-			
-			res.HCLLink = fmt.Sprintf("%v", item["vcglink"])
-			res.Certified = "FALSE"
-
-			releases, ok := item["releases"].(map[string]interface{})
-			if !ok { return true }
-
-			relData, exists := releases[release]
-			if !exists { return true }
-
-			res.Certified = "TRUE"
-			if res.Firmware != "" { res.FirmwareCertified = "FALSE" }
-			cleanHostFw := strings.TrimSpace(res.Firmware)
-
-			if fwList, ok := relData.([]interface{}); ok {
-				for _, fwItem := range fwList {
-					fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwItem.(map[string]interface{})["firmware"]))
-					res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
-					
-					// IMPROVED PATTERN MATCHING FOR DISK FIRMWARES
-					if cleanHostFw != "" && strings.EqualFold(cleanHostFw, fwStr) {
-						res.FirmwareCertified = "TRUE"
-					}
-				}
-			}
-			return true
-		}
-	}
-	return false
-}
-
-// -------------------------------------------------------------
-// Legacy API & Aggregation Functions
-// -------------------------------------------------------------
-
-func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywords []string, targetRelease string) string {
-	type bcmRequest struct {
-		ProgramId string                   `json:"programId"`
-		Filters   []map[string]interface{} `json:"filters"`
-		Keyword   []string                 `json:"keyword"`
-		Date      map[string]string        `json:"date"`
-	}
-
-	reqBody := bcmRequest{
-		ProgramId: programId,
-		Filters:   filters,
-		Keyword:   keywords,
-		Date:      map[string]string{"startDate": "", "endDate": ""},
-	}
-
-	jsonData, _ := json.Marshal(reqBody)
-	urlStr := "https://compatibilityguide.broadcom.com/compguide/programs/viewResults?limit=20&page=1&sortBy=&sortType=ASC"
-	resp, err := http.Post(urlStr, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil || resp.StatusCode != 200 {
-		if resp != nil { resp.Body.Close() }
-		return "ERROR"
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, _ := io.ReadAll(resp.Body)
-	var result map[string]interface{}
-	json.Unmarshal(bodyBytes, &result)
-
-	data, ok := result["data"].(map[string]interface{})
-	if !ok { return "ERROR" }
-
-	countFloat, ok := data["count"].(float64)
-	if !ok || countFloat == 0 { return "FALSE" }
-
-	bodyStr := string(bodyBytes)
-	if strings.Contains(bodyStr, targetRelease) { return "TRUE" }
-	
-	if programId == "vsan" && !strings.Contains(targetRelease, "vSAN") {
-		vsanVer := strings.Replace(targetRelease, "ESXi", "vSAN", 1)
-		vsanTarget := fmt.Sprintf("%s (%s)", targetRelease, vsanVer)
-		if strings.Contains(bodyStr, vsanTarget) { return "TRUE" }
-	}
-
-	return "FALSE"
-}
-
-func aggregateUnique(data []HostComponents) []HostComponents {
-	type aggKey struct {
-		Device, DeviceType, HCLLink, VID, DID, SVID, SSID, CPUID, Firmware, DriverVer, DriverName string
-	}
-
-	aggMap := make(map[aggKey]HCLResult)
-
-	for _, host := range data {
-		for _, res := range host.Results {
-			k := aggKey{res.Device, res.DeviceType, res.HCLLink, res.VID, res.DID, res.SVID, res.SSID, res.CPUID, res.Firmware, res.DriverVer, res.DriverName}
-			if existing, found := aggMap[k]; found {
-				existing.Instances += res.Instances
-				aggMap[k] = existing
-			} else {
-				aggMap[k] = res
-			}
-		}
-	}
-
-	var aggregatedResults []HCLResult
-	for _, res := range aggMap {
-		aggregatedResults = append(aggregatedResults, res)
-	}
-
-	sort.Slice(aggregatedResults, func(i, j int) bool {
-		if aggregatedResults[i].DeviceType == aggregatedResults[j].DeviceType {
-			return aggregatedResults[i].Device < aggregatedResults[j].Device
-		}
-		return aggregatedResults[i].DeviceType < aggregatedResults[j].DeviceType
-	})
-
-	return []HostComponents{{Datacenter: "Global", Cluster: "(Aggregated Deduplication)", Hostname: "All Scanned Hosts", Results: aggregatedResults}}
-}
-
-func buildHexQueryURL(releaseVersion string, vid, did, svid, ssid int16) string {
-	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
-	params := url.Values{}
-	params.Set("program", "io")
-	params.Set("persona", "live")
-	params.Set("column", "brandName")
-	params.Set("order", "asc")
-	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
-	params.Set("vid", fmt.Sprintf("[%04x]", uint16(vid)))
-	params.Set("did", fmt.Sprintf("[%04x]", uint16(did)))
-	params.Set("svid", fmt.Sprintf("[%04x]", uint16(svid)))
-	params.Set("ssid", fmt.Sprintf("[%04x]", uint16(ssid)))
-	u.RawQuery = params.Encode()
-	return u.String()
-}
-
-func buildSystemQuery(displayModel, searchKeyword, releaseVersion string) HCLResult {
-	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
-	params := url.Values{}
-	params.Set("program", "server")
-	params.Set("persona", "live")
-	params.Set("keyword", searchKeyword)
-	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
-	u.RawQuery = params.Encode()
-	return HCLResult{Device: displayModel, DeviceType: "system", Instances: 1, HCLLink: u.String()}
-}
-
-func buildCPUQuery(cpuModel, cpuId, releaseVersion string) HCLResult {
-	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
-	params := url.Values{}
-	params.Set("program", "cpu")
-	params.Set("persona", "live")
-	params.Set("column", "cpuSeries")
-	params.Set("order", "asc")
-	keyword := cpuModel
-	if cpuId != "" { keyword = cpuId }
-	params.Set("keyword", keyword)
-	u.RawQuery = params.Encode()
-	return HCLResult{Device: cpuModel, DeviceType: "CPU", Instances: 1, HCLLink: u.String()}
-}
-
-func buildDiskQueryURL(vendor, model, releaseVersion string) string {
-	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
-	params := url.Values{}
-	params.Set("program", "ssd")
-	params.Set("persona", "live")
-	params.Set("column", "partnerName")
-	params.Set("order", "asc")
-	if vendor != "" { params.Set("partners", fmt.Sprintf("[%s]", vendor)) }
-	params.Set("keyword", model)
-	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
-	u.RawQuery = params.Encode()
-	return u.String()
-}
-
-func buildVsanNvmeQueryURL(vendor, model, releaseVersion string) string {
-	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
-	params := url.Values{}
-	params.Set("program", "ssd")
-	params.Set("persona", "live")
-	params.Set("column", "partnerName")
-	params.Set("order", "asc")
-	if vendor != "" { params.Set("partners", fmt.Sprintf("[%s]", vendor)) }
-	params.Set("keyword", model)
-	vsanRelease := releaseVersion
-	if !strings.Contains(vsanRelease, "vSAN") {
-		vsanVer := strings.Replace(releaseVersion, "ESXi", "vSAN", 1)
-		vsanRelease = fmt.Sprintf("%s (%s)", releaseVersion, vsanVer)
-	}
-	params.Set("supportedReleases", fmt.Sprintf("[%s]", vsanRelease))
-	u.RawQuery = params.Encode()
-	return u.String()
-}
+							if cleanHostFw != "" && strings.
