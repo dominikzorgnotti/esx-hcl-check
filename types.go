@@ -4,7 +4,6 @@ import "regexp"
 
 // --- Structs for Phase 1: Raw vSphere Data Collection ---
 
-// RawPCIDevice holds the raw hardware IDs for a single PCI device.
 type RawPCIDevice struct {
 	DeviceName string `json:"device_name"`
 	DeviceType string `json:"device_type"`
@@ -17,7 +16,6 @@ type RawPCIDevice struct {
 	DriverName string `json:"driver_name"`
 }
 
-// RawDiskDevice holds the raw vendor and model for a storage disk.
 type RawDiskDevice struct {
 	DeviceName string `json:"device_name"`
 	DeviceType string `json:"device_type"`
@@ -26,7 +24,6 @@ type RawDiskDevice struct {
 	Firmware   string `json:"firmware"`
 }
 
-// RawHostData holds the unanalyzed hardware inventory for a single ESXi host.
 type RawHostData struct {
 	Datacenter  string          `json:"datacenter"`
 	Cluster     string          `json:"cluster"`
@@ -42,7 +39,6 @@ type RawHostData struct {
 
 // --- Exclude Configuration ---
 
-// ExcludeID represents a hardware hex combination to drop.
 type ExcludeID struct {
 	VID  string `json:"vid"`
 	DID  string `json:"did"`
@@ -50,7 +46,6 @@ type ExcludeID struct {
 	SSID string `json:"ssid"`
 }
 
-// ExcludeConfig maps directly to the exclude.json payload.
 type ExcludeConfig struct {
 	Names           []string         `json:"names"`
 	RegexNames      []string         `json:"regex_names"`
@@ -58,20 +53,35 @@ type ExcludeConfig struct {
 	CompiledRegexes []*regexp.Regexp `json:"-"`
 }
 
+// --- vSAN Offline DB ---
+
+type VsanOfflineDB struct {
+	Timestamp int64 `json:"timestamp"`
+	Data      struct {
+		Controller []map[string]interface{} `json:"controller"`
+		Hdd        []map[string]interface{} `json:"hdd"`
+		Ssd        []map[string]interface{} `json:"ssd"`
+		Nic        []map[string]interface{} `json:"nic"`
+	} `json:"data"`
+}
+
 // --- Structs for Phase 2: HCL Verification ---
 
-// HCLResult represents the certification status of a single hardware component.
 type HCLResult struct {
-	Device     string `json:"device"`
-	DeviceType string `json:"device_type"`
-	Instances  int    `json:"number_of_instances"`
-	Firmware   string `json:"current_firmware"`
-	DriverVer  string `json:"current_driver_version"`
-	DriverName string `json:"driver_name"`
-	Certified  string `json:"certified"`
-	HCLLink    string `json:"hcl"`
+	Device             string   `json:"device"`
+	DeviceType         string   `json:"device_type"`
+	Instances          int      `json:"number_of_instances"`
+	Firmware           string   `json:"current_firmware"`
+	DriverVer          string   `json:"current_driver_version"`
+	DriverName         string   `json:"driver_name"`
+	Certified          string   `json:"hw_certified"`
+	DriverCertified    string   `json:"driver_certified"`
+	FirmwareCertified  string   `json:"firmware_certified"`
+	SupportedDrivers   []string `json:"supported_drivers,omitempty"`
+	SupportedFirmwares []string `json:"supported_firmwares,omitempty"`
+	HCLLink            string   `json:"hcl"`
 
-	// Detailed hardware IDs (conditionally populated via -details flag)
+	// Detailed hardware IDs
 	VID   string `json:"vid,omitempty"`
 	DID   string `json:"did,omitempty"`
 	SVID  string `json:"svid,omitempty"`
@@ -79,7 +89,6 @@ type HCLResult struct {
 	CPUID string `json:"cpu_id,omitempty"`
 }
 
-// HostComponents holds the HCL results for a single ESXi host.
 type HostComponents struct {
 	Datacenter string
 	Cluster    string
