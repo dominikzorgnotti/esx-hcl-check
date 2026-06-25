@@ -29,14 +29,9 @@ func saveRawInventory(data []RawHostData, targetPath string) (string, error) {
 		}
 		filePath = f.Name()
 		defer f.Close()
-
-		if _, err := f.Write(b); err != nil {
-			return "", fmt.Errorf("failed to write to temp file: %w", err)
-		}
+		f.Write(b)
 	} else {
-		if err := os.WriteFile(filePath, b, 0644); err != nil {
-			return "", fmt.Errorf("failed to write file %s: %w", filePath, err)
-		}
+		os.WriteFile(filePath, b, 0644)
 	}
 
 	return filePath, nil
@@ -53,13 +48,13 @@ func printText(data []HostComponents) {
 		fmt.Printf("Host: %s\n\n", hd.Hostname)
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "------------------------------------------------------------------------------------------------")
-		fmt.Fprintln(w, "| device\t| device type\t| number of instances\t| certified\t| hcl\t|")
-		fmt.Fprintln(w, "------------------------------------------------------------------------------------------------")
+		fmt.Fprintln(w, "------------------------------------------------------------------------------------------------------------------------------------------------")
+		fmt.Fprintln(w, "| device\t| device type\t| instances\t| hw certified\t| drv certified\t| fw certified\t| hcl link\t|")
+		fmt.Fprintln(w, "------------------------------------------------------------------------------------------------------------------------------------------------")
 		
 		for _, res := range hd.Results {
-			fmt.Fprintf(w, "| %s\t| %s\t| %d\t| %s\t| %s\t|\n",
-				res.Device, res.DeviceType, res.Instances, res.Certified, res.HCLLink)
+			fmt.Fprintf(w, "| %s\t| %s\t| %d\t| %s\t| %s\t| %s\t| %s\t|\n",
+				res.Device, res.DeviceType, res.Instances, res.Certified, res.DriverCertified, res.FirmwareCertified, res.HCLLink)
 		}
 		w.Flush()
 		fmt.Printf("\n---\n\n")
