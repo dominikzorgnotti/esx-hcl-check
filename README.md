@@ -4,6 +4,10 @@
 
 The tool natively handles complex extraction tasks such as parsing binary CPUID instruction sets, identifying PCI bus architectures to distinguish between standard HBAs and NVMe drives, and extracting underlying BIOS, Firmware, and Driver versions directly from the hypervisor. It provides a clear `TRUE` or `FALSE` certification status for System chassis, Processors, I/O devices, and vSAN SSDs.
 
+## **🚀 Downloads **
+
+Check out the [releases](https://github.com/dominikzorgnotti/esx-hcl-check/releases) to find the latest binaries for your system.
+
 ## **🛠️ Requirements for Building the Code**
 
 To compile this code from source, you will need:
