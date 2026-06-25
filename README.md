@@ -1,8 +1,8 @@
 # **esx-hcl-check**
 
-`esx-hcl-check` is a command-line tool designed for vSphere and VMware Cloud Foundation (VCF) administrators. It connects to a vCenter server, extracts the exact hardware inventory of your ESXi hosts, and automatically verifies those components against the Broadcom VMware Compatibility Guide API.
+`esx-hcl-check` is a command-line tool designed for vSphere and VMware Cloud Foundation (VCF) administrators. It connects to a vCenter server, extracts the exact hardware inventory of your ESXi hosts, and automatically verifies those components against the Broadcom VMware Compatibility Guide API and the offline vSAN database.
 
-The tool natively handles complex extraction tasks such as parsing binary CPUID instruction sets, identifying PCI bus architectures to distinguish between standard HBAs and NVMe drives, and extracting underlying BIOS/Firmware and Driver versions directly from the hypervisor. It validates System chassis, Processors, I/O devices (Network, Fibre Channel, RAID, GPUs), and vSAN SSDs directly against Broadcom's backend API to provide a clear `TRUE` or `FALSE` certification status.
+The tool natively handles complex extraction tasks such as parsing binary CPUID instruction sets, identifying PCI bus architectures to distinguish between standard HBAs and NVMe drives, and extracting underlying BIOS, Firmware, and Driver versions directly from the hypervisor. It provides a clear `TRUE` or `FALSE` certification status for System chassis, Processors, I/O devices, and vSAN SSDs.
 
 ## **🛠️ Requirements for Building the Code**
 
@@ -16,116 +16,134 @@ To compile this code from source, you will need:
 1. Clone or download the repository to your local machine.
 
 Initialize the Go module and fetch the required dependencies:
-
-```shell
+```bash
 go mod init esx-hcl-check
-go mod tidy
+go mod tidy  
 ```
 
-Build the executable:
+2. Build the executable:
 
-```shell
-go build -o esx-hcl-check .
+```bash
+ go build -o esx-hcl-check .
 ```
 
 ## **🚀 Basic Usage (Connection Parameters)**
 
-`esx-hcl-check` uses the same environmental connection variables as the standard `govc` CLI tool. You must set these variables in your terminal environment before running the tool so it knows how to authenticate with your vCenter server.
+`esx-hcl-check` uses the same environmental connection variables as the standard `govc` CLI tool. You must set these variables in your terminal environment before running the tool.
 
 **Linux / macOS:**
 
-```shell
-export GOVC_URL="vcsa.yourdomain.com"
-export GOVC_USERNAME="administrator@vsphere.local"
-export GOVC_PASSWORD="YourSecurePassword!"
+```bash
+export GOVC_URL="vcsa.yourdomain.com"  
+export GOVC_USERNAME="administrator@vsphere.local"  
+export GOVC_PASSWORD="YourSecurePassword!"  
 export GOVC_INSECURE=1
 ```
 
 **Windows (PowerShell):**
 
-```
-$env:GOVC_URL="vcsa.yourdomain.com"
-$env:GOVC_USERNAME="administrator@vsphere.local"
-$env:GOVC_PASSWORD="YourSecurePassword!"
+```powershell
+$env:GOVC_URL="vcsa.yourdomain.com"  
+$env:GOVC_USERNAME="administrator@vsphere.local"  
+$env:GOVC_PASSWORD="YourSecurePassword!"  
 $env:GOVC_INSECURE="1"
 ```
 
 Once your variables are set, run the tool with the mandatory release parameter:
 
-```shell
+```bash
 ./esx-hcl-check -release="ESXi 9.1"
 ```
 
 ## **⚙️ Command Line Parameters**
 
-The tool provides several command-line flags to filter your scope and control the output format.
-
 | Flag | Description | Default |
 | ----- | ----- | ----- |
-| `-release` | **\[REQUIRED\]** The target ESXi release version to validate compatibility against (e.g., "ESXi 9.1", "ESXi 8.0 U3"). Must match the Broadcom Product Release Version string. | *None* |
-| `-dc` | Target a specific Datacenter. Overrides the GOVC\_DATACENTER variable. | `""` (All Datacenters) |
-| `-cluster` | Target a specific Cluster. Overrides the GOVC\_CLUSTER variable. | `""` (All Clusters) |
+| `-release` | **[REQUIRED]** The target ESXi release version to validate compatibility against (e.g., "ESXi 9.1", "ESXi 8.0 U3"). | *None* |
+| `-dc` | Target a specific Datacenter. Overrides the GOVC_DATACENTER variable. | `""` |
+| `-cluster` | Target a specific Cluster. Overrides the GOVC_CLUSTER variable. | `""` |
 | `-unique` | Aggregates and deduplicates all hardware findings globally across all scanned hosts. | `false` |
 | `-exclude` | Path to the JSON file containing rules to drop specific devices from the scan. | `exclude.json` |
-| `-json` | Outputs the final HCL evaluation results as a JSON payload. Required to view extracted firmware and driver versions. | `false` |
-| `-details` | Includes raw hardware identifiers (VID, DID, SVID, SSID, CPUID) in the JSON output payload. *Automatically enables \-json*. | `false` |
-| `-vsan` | **\[BETA\]** Extracts vSAN SSDs and NVMe drives and checks them against the vSAN HCL database. | `false` |
+| `-vsanhcl` | Path to the local vSAN HCL offline JSON database. Automatically downloaded if missing or outdated. | `vsan-offline-hcl.json` |
+| `-unsupported` | Filters the output to ONLY show hardware components that are NOT certified. | `false` |
+| `-mismatch` | Filters the output to ONLY show certified hardware that has an unsupported Firmware or Driver installed. | `false` |
+| `-json` | Outputs the final HCL evaluation results as a JSON payload instead of a text table. | `false` |
+| `-details` | Includes raw hardware identifiers (VID, DID, SVID, SSID) and supported firmware/driver arrays in the JSON. *Auto-enables -json*. | `false` |
+| `-vsan` | **[BETA]** Extracts vSAN SSDs and NVMe drives and checks them against the vSAN HCL database. | `false` |
 | `-debugpci` | Bypasses I/O filters and dumps all unknown PCI devices into the raw JSON file for troubleshooting. | `false` |
-| `-vspherejson` | Path to save the raw hardware data extracted from vCenter (Phase 1). | OS Temp Directory |
-| `-nohcl` | Skips the Broadcom HCL validation phase entirely. Useful if you only want to extract the raw vSphere hardware JSON payload. | `false` |
+| `-nohcl` | Skips the Broadcom HCL validation phase entirely. Useful to just extract the vSphere hardware payload. | `false` |
 
-### **Usage Examples**
+### **💡 Usage Examples**
 
-**Check compatibility for an entire datacenter and aggregate the unique components globally:**
+**1. Find non-certified components globally across your environment:**
 
-```shell
-./esx-hcl-check -release="ESXi 9.1" -dc="Datacenter-London" -unique
+```
+./esx-hcl-check -release="ESXi 9.1" -unique -unsupported
 ```
 
-**Export full detailed hardware JSON (including exact PCI hex IDs, firmwares, and drivers) for CI/CD pipelines:**
+**2. Find certified hardware running the WRONG firmware or driver:**
 
-## 
-
-```shell
-./esx-hcl-check -release="ESXi 8.0 U3" -details -vsan
 ```
+./esx-hcl-check -release="ESXi 8.0 U3" -mismatch
+```
+
+**3. Export a complete, deduplicated, detailed JSON payload for CI/CD or reporting (includes supported driver/FW lists):**
+
+```
+./esx-hcl-check -release="ESXi 9.1" -unique -json -details -vsan
+```
+
+## **🧠 Architecture: vSAN Offline DB & Firmware Limitations**
+
+Because Broadcom's live REST API does not easily expose deep firmware and driver matrices for unauthenticated queries, this tool relies on a hybrid approach for maximum accuracy:
+
+### **The vSAN Offline Database (`vsan-offline-hcl.json`)**
+
+To reliably validate I/O controllers, NICs, and vSAN SSDs, the tool automatically downloads Broadcom's comprehensive vSAN Offline JSON Database. It caches this file locally (updating it automatically if it is older than 24 hours).
+
+During the HCL verification phase, the tool first searches this offline database using exact hex identifiers (VID, DID, SVID, SSID) or Disk model/vendor combinations. If a match is found, the tool can definitively cross-reference the exact driver and firmware installed on your host against the arrays of certified versions listed in the database. This allows for the precise `-mismatch` filtering feature.
+
+### **Live API Fallback & Storage Device Limitations**
+
+If a component (such as a generic storage HBA or an older disk) is not found in the vSAN Offline DB, the tool seamlessly falls back to querying the live Broadcom Compatibility Guide API.
+
+**Important Limitations:**
+
+* **Firmware Extraction:** The standard vSphere hypervisor API (which this tool uses) does not natively expose the firmware versions for standard PCI HBAs and NICs without executing privileged `esxcli` commands.  
+* **NVMe Vendors:** vSphere often translates the vendor of directly-attached NVMe drives generically as "NVMe", moving the true vendor (e.g., Dell, Samsung) into the model string. The tool automatically tokenizes these strings to perform intelligent matching.  
+* **API Limitations:** When falling back to the live Broadcom API, the tool can verify if the hardware baseline is certified (`TRUE/FALSE`), but cannot definitively certify the exact Firmware/Driver combination. In these cases, the `drv certified` and `fw certified` columns will gracefully report `N/A`.
 
 ## **🛡️ Excluding Specific Devices**
 
 In large environments, you may want to ignore non-critical components (like integrated AHCI controllers or USB bridges) to prevent them from cluttering your reports. You can achieve this by creating an `exclude.json` file in your working directory.
 
-The tool will automatically parse this file and drop matching devices before they are sent to the Broadcom API.
-
 You can filter devices using three different methods:
 
 1. **names:** An exact string match of the device name.  
-2. **regex\_names:** A Regular Expression applied to the device name.  
+2. **regex_names:** A Regular Expression applied to the device name.  
 3. **ids:** Specific hexadecimal hardware identifiers (VID, DID, SVID, SSID).
 
 **Example `exclude.json` Payload:**
 
-```
-{
-  "names": [
-    "Lewisburg SATA AHCI Controller",
-    "VMware NVMe Controller"
-  ],
-  "regex_names": [
-    "Lewisburg.*",
-    "(?i)^intel.*usb.*"
-  ],
-  "ids": [
-    {
-      "vid": "8086",
-      "did": "a1d2"
-    },
-    {
-      "vid": "15b3",
-      "ssid": "0091"
-    }
-  ]
+```bash
+{  
+  "names": [  
+    "Lewisburg SATA AHCI Controller",  
+    "VMware NVMe Controller"  
+  ],  
+  "regex_names": [  
+    "Lewisburg.*",  
+    "(?i)^intel.*usb.*"  
+  ],  
+  "ids": [  
+    {  
+      "vid": "8086",  
+      "did": "a1d2"  
+    },  
+    {  
+      "vid": "15b3",  
+      "ssid": "0091"  
+    }  
+  ]  
 }
 ```
-
-*Note: ID matching is highly flexible. If you only provide a `vid`, it will exclude every device from that specific vendor. If you provide a `vid`, `did`, and `ssid`, it requires all three to match before the device is dropped.*
-
