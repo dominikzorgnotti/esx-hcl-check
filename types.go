@@ -75,6 +75,7 @@ type VsanOfflineDB struct {
 // --- Missing Info Tracking ---
 
 type MissingDetail struct {
+	Hostname string   `json:"hostname,omitempty"`
 	Device  string   `json:"device"`
 	Missing []string `json:"missing"`
 	Reason  string   `json:"reason,omitempty"`

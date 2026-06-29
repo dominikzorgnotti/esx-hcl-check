@@ -182,7 +182,15 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 			}
 			for _, ctrl := range iface.ConnectedController {
 				if ctrl.FirmwareVersion != "" {
-					nvmeFirmware[pci] = ctrl.FirmwareVersion
+					// NvmeTopology appends the transport type (e.g. " PCIe") to the
+					// firmware string. Strip it so comparison against the HCL works.
+					fw := strings.TrimSpace(ctrl.FirmwareVersion)
+					if strings.HasSuffix(strings.ToUpper(fw), "PCIE") {
+						if stripped := strings.TrimSpace(fw[:len(fw)-4]); stripped != "" {
+							fw = stripped
+						}
+					}
+					nvmeFirmware[pci] = fw
 					break
 				}
 			}
@@ -330,6 +338,27 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 	}
 
 	if vsanBeta {
+		// Build a map from ScsiLun key -> HBA PCI address so we can attach the
+		// NVMe controller's driver name/version to each SSD disk entry.
+		diskKeyToHbaPci := make(map[string]string)
+		if hostMo.Config != nil && hostMo.Config.StorageDevice != nil &&
+			hostMo.Config.StorageDevice.ScsiTopology != nil {
+			for _, topAdap := range hostMo.Config.StorageDevice.ScsiTopology.Adapter {
+				pci := hbaKeyToPci[topAdap.Adapter]
+				if pci == "" {
+					pci = hbaDevToPci[topAdap.Adapter]
+				}
+				if pci == "" {
+					continue
+				}
+				for _, target := range topAdap.Target {
+					for _, lun := range target.Lun {
+						diskKeyToHbaPci[lun.ScsiLun] = pci
+					}
+				}
+			}
+		}
+
 		if hostMo.Config != nil && hostMo.Config.StorageDevice != nil {
 			for _, baseLun := range hostMo.Config.StorageDevice.ScsiLun {
 				if disk, ok := baseLun.(*types.HostScsiDisk); ok {
@@ -337,7 +366,7 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 						vendor := strings.TrimSpace(disk.Vendor)
 						model := strings.TrimSpace(disk.Model)
 						diskName := fmt.Sprintf("%s %s", vendor, model)
-						
+
 						// Verify disk against Exclude rules
 						excluded := false
 						for _, name := range excludeCfg.Names {
@@ -356,12 +385,23 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 						}
 
 						if !excluded {
+							// Look up the NVMe PCIe controller this disk is connected to
+							// so we can carry its driver name/version down to the disk entry.
+							pci := diskKeyToHbaPci[disk.Key]
+							driverName := nvmeDriverName[pci]
+							driverVer := ""
+							if info, ok := hba91Firmware[pci]; ok {
+								driverVer = info.Driver
+							}
+
 							raw.Disks = append(raw.Disks, RawDiskDevice{
 								DeviceName: diskName,
 								DeviceType: "vSAN SSD",
 								Vendor:     vendor,
 								Model:      model,
 								Firmware:   strings.TrimSpace(disk.Revision),
+								DriverName: driverName,
+								DriverVer:  driverVer,
 							})
 						}
 					}

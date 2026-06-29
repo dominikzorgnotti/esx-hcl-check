@@ -15,7 +15,7 @@ import (
 
 // performHCLChecks processes the raw inventory and maps it to Broadcom search queries.
 func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci bool, vsanHclPath string) []HostComponents {
-	
+
 	// Ensure we have an up-to-date offline vSAN database
 	vsanDB, err := loadVsanHCL(vsanHclPath)
 	if err != nil {
@@ -65,7 +65,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 
 		for _, pci := range raw.PCIDevices {
 			k := pciKey{VID: pci.VID, DID: pci.DID, SVID: pci.SVID, SSID: pci.SSID, FW: pci.Firmware, DV: pci.DriverVer, DN: pci.DriverName}
-			
+
 			if idx, found := pciMap[k]; found {
 				hostComp.Results[idx].Instances++
 			} else {
@@ -103,7 +103,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 						if isAPIVersionAtLeast(raw.APIVersion, "9.1") {
 							reason = "vSphere 9.1 SOAP call returned no firmware/driver for this device"
 						}
-						hostComp.Issues = append(hostComp.Issues, MissingDetail{Device: pci.DeviceName, Missing: missing, Reason: reason})
+						hostComp.Issues = append(hostComp.Issues, MissingDetail{Hostname: raw.Hostname, Device: pci.DeviceName, Missing: missing, Reason: reason})
 					}
 				}
 
@@ -113,7 +113,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					if vsanDB != nil {
 						foundInVsan = evaluateVsanPCI(vsanDB, vidHex, didHex, svidHex, ssidHex, releaseVersion, &res)
 					}
-					
+
 					// Fallback to Broadcom API if not found in vSAN DB
 					if !foundInVsan {
 						filters := []map[string]interface{}{
@@ -159,16 +159,16 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					if disk.DeviceType == "vSAN NVMe PCIe" {
 						reason = "NVMe controller not found in vSphere topology data"
 					}
-					hostComp.Issues = append(hostComp.Issues, MissingDetail{Device: disk.DeviceName, Missing: []string{"firmware"}, Reason: reason})
+					hostComp.Issues = append(hostComp.Issues, MissingDetail{Hostname: raw.Hostname, Device: disk.DeviceName, Missing: []string{"firmware"}, Reason: reason})
 				}
 
-				// Track missing driver version for NVMe PCIe controllers
-				if disk.DeviceType == "vSAN NVMe PCIe" && disk.DriverVer == "" {
+				// Track missing driver version for NVMe controllers (PCIe controller and correlated SSD entries)
+				if (disk.DeviceType == "vSAN NVMe PCIe" || (disk.DeviceType == "vSAN SSD" && disk.DriverName != "")) && disk.DriverVer == "" {
 					reason := "vSphere API pre-9.1 does not expose NVMe controller driver version"
 					if isAPIVersionAtLeast(raw.APIVersion, "9.1") {
 						reason = "vSphere 9.1 SOAP call returned no driver version for this NVMe controller"
 					}
-					hostComp.Issues = append(hostComp.Issues, MissingDetail{Device: disk.DeviceName, Missing: []string{"driver"}, Reason: reason})
+					hostComp.Issues = append(hostComp.Issues, MissingDetail{Hostname: raw.Hostname, Device: disk.DeviceName, Missing: []string{"driver"}, Reason: reason})
 				}
 
 				foundInVsan := false
@@ -195,7 +195,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					}
 					filters := []map[string]interface{}{}
 					cleanVen := strings.TrimSpace(disk.Vendor)
-					
+
 					// Do not pass generic "NVMe" to the Broadcom API to prevent HTTP 400 Bad Request errors.
 					// Short/ambiguous vendor names (e.g. "HP") can also trigger 400; we retry without them below.
 					if cleanVen != "" && !strings.EqualFold(cleanVen, "NVMe") {
@@ -225,7 +225,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 
 func loadVsanHCL(path string) (*VsanOfflineDB, error) {
 	needsDownload := false
-	
+
 	_, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		needsDownload = true
@@ -265,14 +265,17 @@ func loadVsanHCL(path string) (*VsanOfflineDB, error) {
 }
 
 func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, res *HCLResult) bool {
-	checkList := append(db.Data.Controller, db.Data.Nic...)
-	
+	// Search controller, NIC, and SSD entries by PCI IDs.
+	// NVMe PCIe SSDs can appear in the SSD category in the offline HCL.
+	// Entries without vid/did fields simply won't match.
+	checkList := append(append(db.Data.Controller, db.Data.Nic...), db.Data.Ssd...)
+
 	for _, item := range checkList {
 		if strings.EqualFold(fmt.Sprintf("%v", item["vid"]), vid) &&
-		   strings.EqualFold(fmt.Sprintf("%v", item["did"]), did) &&
-		   strings.EqualFold(fmt.Sprintf("%v", item["svid"]), svid) &&
-		   strings.EqualFold(fmt.Sprintf("%v", item["ssid"]), ssid) {
-			
+			strings.EqualFold(fmt.Sprintf("%v", item["did"]), did) &&
+			strings.EqualFold(fmt.Sprintf("%v", item["svid"]), svid) &&
+			strings.EqualFold(fmt.Sprintf("%v", item["ssid"]), ssid) {
+
 			res.HCLLink = fmt.Sprintf("%v", item["vcglink"])
 			res.Certified = "FALSE"
 
@@ -281,36 +284,52 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 
 			relData, exists := releases[release]
 			if !exists { return true }
-			
+
 			res.Certified = "TRUE"
-
-			if res.DriverName != "" && res.DriverVer != "" { res.DriverCertified = "FALSE" }
-			if res.Firmware != "" { res.FirmwareCertified = "FALSE" }
-
 			cleanHostDrvVer := strings.TrimSpace(res.DriverVer)
 			cleanHostFw := strings.TrimSpace(res.Firmware)
 
-			for drvName, drvObj := range relData.(map[string]interface{}) {
-				if drvName == "vsanSupport" || drvName == "deviceSupport" { continue }
-				
-				for drvVer, drvDetails := range drvObj.(map[string]interface{}) {
-					res.SupportedDrivers = append(res.SupportedDrivers, fmt.Sprintf("%s %s", drvName, drvVer))
-					
-					hclBaseDrvVer := strings.Split(drvVer, "-")[0]
-					if strings.Contains(strings.ToLower(res.DriverName), strings.ToLower(drvName)) {
-						if strings.EqualFold(cleanHostDrvVer, drvVer) || strings.EqualFold(cleanHostDrvVer, hclBaseDrvVer) {
-							res.DriverCertified = "TRUE"
+			if relMap, ok := relData.(map[string]interface{}); ok {
+				// Controller/NIC-style releases: keyed by driver name → version → {firmwares:[…]}
+				if res.DriverName != "" && res.DriverVer != "" { res.DriverCertified = "FALSE" }
+				if res.Firmware != "" { res.FirmwareCertified = "FALSE" }
+
+				for drvName, drvObj := range relMap {
+					if drvName == "vsanSupport" || drvName == "deviceSupport" { continue }
+					drvVersions, ok := drvObj.(map[string]interface{})
+					if !ok { continue }
+					for drvVer, drvDetails := range drvVersions {
+						res.SupportedDrivers = append(res.SupportedDrivers, fmt.Sprintf("%s %s", drvName, drvVer))
+						hclBaseDrvVer := strings.Split(drvVer, "-")[0]
+						if strings.Contains(strings.ToLower(res.DriverName), strings.ToLower(drvName)) {
+							if strings.EqualFold(cleanHostDrvVer, drvVer) || strings.EqualFold(cleanHostDrvVer, hclBaseDrvVer) {
+								res.DriverCertified = "TRUE"
+							}
+						}
+						if detailMap, ok := drvDetails.(map[string]interface{}); ok {
+							if fwList, ok := detailMap["firmwares"].([]interface{}); ok {
+								for _, fwItem := range fwList {
+									if fwMap, ok := fwItem.(map[string]interface{}); ok {
+										fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwMap["firmware"]))
+										res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
+										if cleanHostFw != "" && strings.EqualFold(cleanHostFw, fwStr) {
+											res.FirmwareCertified = "TRUE"
+										}
+									}
+								}
+							}
 						}
 					}
-
-					if fwList, ok := drvDetails.(map[string]interface{})["firmwares"].([]interface{}); ok {
-						for _, fwItem := range fwList {
-							fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwItem.(map[string]interface{})["firmware"]))
-							res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
-							
-							if cleanHostFw != "" && strings.EqualFold(cleanHostFw, fwStr) {
-								res.FirmwareCertified = "TRUE"
-							}
+				}
+			} else if relArr, ok := relData.([]interface{}); ok {
+				// SSD/HDD-style releases: [{firmware: "…"}, …] — no driver arrays
+				if res.Firmware != "" { res.FirmwareCertified = "FALSE" }
+				for _, fwItem := range relArr {
+					if fwMap, ok := fwItem.(map[string]interface{}); ok {
+						fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwMap["firmware"]))
+						res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
+						if cleanHostFw != "" && strings.EqualFold(cleanHostFw, fwStr) {
+							res.FirmwareCertified = "TRUE"
 						}
 					}
 				}
@@ -323,10 +342,10 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 
 func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCLResult) bool {
 	checkList := append(db.Data.Ssd, db.Data.Hdd...)
-	
+
 	cleanVendor := strings.ToLower(strings.TrimSpace(vendor))
 	cleanModel := strings.ToLower(strings.TrimSpace(model))
-	
+
 	// FIX: Handle vSphere's generic "NVMe" vendor translation by extracting the true vendor from the model
 	if cleanVendor == "nvme" || cleanVendor == "" {
 		parts := strings.Fields(cleanModel)
@@ -391,7 +410,7 @@ func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCL
 			if fwList, ok := relData.([]interface{}); ok {
 				for _, fwItem := range fwList {
 					fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwItem.(map[string]interface{})["firmware"]))
-					
+
 					// Deduplicate the array when pushing to supported_firmwares
 					existsInList := false
 					for _, existingFw := range res.SupportedFirmwares {
@@ -403,7 +422,7 @@ func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCL
 					if !existsInList {
 						res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
 					}
-					
+
 					if cleanHostFw != "" && strings.EqualFold(cleanHostFw, fwStr) {
 						res.FirmwareCertified = "TRUE"
 					}
@@ -455,7 +474,7 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 
 	bodyStr := string(bodyBytes)
 	if strings.Contains(bodyStr, targetRelease) { return "TRUE" }
-	
+
 	if programId == "vsan" && !strings.Contains(targetRelease, "vSAN") {
 		vsanVer := strings.Replace(targetRelease, "ESXi", "vSAN", 1)
 		vsanTarget := fmt.Sprintf("%s (%s)", targetRelease, vsanVer)
@@ -500,8 +519,9 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 	var aggregatedIssues []MissingDetail
 	for _, host := range data {
 		for _, issue := range host.Issues {
-			if !issuesSeen[issue.Device] {
-				issuesSeen[issue.Device] = true
+			key := issue.Hostname + "|" + issue.Device
+			if !issuesSeen[key] {
+				issuesSeen[key] = true
 				aggregatedIssues = append(aggregatedIssues, issue)
 			}
 		}

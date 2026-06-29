@@ -66,28 +66,39 @@ func printText(data []HostComponents, quiet bool) {
 	}
 
 	type issueEntry struct {
-		Device string
-		Reason string
+		Hostname string
+		Device   string
+		Reason   string
 	}
 	seen := make(map[string]bool)
 	var issueList []issueEntry
 	for _, host := range data {
 		for _, issue := range host.Issues {
-			if !seen[issue.Device] {
-				seen[issue.Device] = true
-				issueList = append(issueList, issueEntry{Device: issue.Device, Reason: issue.Reason})
+			key := issue.Hostname + "|" + issue.Device
+			if !seen[key] {
+				seen[key] = true
+				issueList = append(issueList, issueEntry{Hostname: issue.Hostname, Device: issue.Device, Reason: issue.Reason})
 			}
 		}
 	}
 	if len(issueList) > 0 {
-		sort.Slice(issueList, func(i, j int) bool { return issueList[i].Device < issueList[j].Device })
+		sort.Slice(issueList, func(i, j int) bool {
+			if issueList[i].Hostname != issueList[j].Hostname {
+				return issueList[i].Hostname < issueList[j].Hostname
+			}
+			return issueList[i].Device < issueList[j].Device
+		})
 		fmt.Println("Issues:")
 		fmt.Println("Could not get firmware/driver information for the following devices")
 		for _, e := range issueList {
+			prefix := e.Device
+			if e.Hostname != "" {
+				prefix = fmt.Sprintf("%s on %s", e.Device, e.Hostname)
+			}
 			if e.Reason != "" {
-				fmt.Printf("  * %s (Reason: %s)\n", e.Device, e.Reason)
+				fmt.Printf("  * %s (Reason: %s)\n", prefix, e.Reason)
 			} else {
-				fmt.Printf("  * %s\n", e.Device)
+				fmt.Printf("  * %s\n", prefix)
 			}
 		}
 		fmt.Println()
