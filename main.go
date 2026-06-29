@@ -26,6 +26,7 @@ func main() {
 		vsanHclFile = flag.String("vsanhcl", "vsan-offline-hcl.json", "Path to the local vSAN HCL offline JSON database")
 		unsupported = flag.Bool("unsupported", false, "Filter output to ONLY show hardware that is not certified")
 		mismatch    = flag.Bool("mismatch", false, "Filter output to ONLY show hardware that is certified but has a driver/firmware mismatch")
+		quiet       = flag.Bool("quiet", false, "Suppress warnings about missing firmware/driver information")
 	)
 	flag.Parse()
 
@@ -105,9 +106,9 @@ func main() {
 	// PHASE 3: Output Formatting
 	// ---------------------------------------------------------
 	if *jsonOutput {
-		printJSON(hclResults)
+		printJSON(hclResults, *quiet)
 	} else {
-		printText(hclResults)
+		printText(hclResults, *quiet)
 	}
 }
 

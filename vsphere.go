@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -73,7 +77,7 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 				continue
 			}
 			for _, hostRef := range hosts {
-				if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), cluster.Name(), debugPci, vsanBeta, excludeCfg); hostData != nil {
+				if hostData := extractHostHardware(ctx, client, pc, hostRef.Reference(), dc.Name(), cluster.Name(), debugPci, vsanBeta, excludeCfg); hostData != nil {
 					allHostData = append(allHostData, *hostData)
 				}
 			}
@@ -88,7 +92,7 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 					}
 					if hosts, err := cr.Hosts(ctx); err == nil {
 						for _, hostRef := range hosts {
-							if hostData := extractHostHardware(ctx, pc, hostRef.Reference(), dc.Name(), "", debugPci, vsanBeta, excludeCfg); hostData != nil {
+							if hostData := extractHostHardware(ctx, client, pc, hostRef.Reference(), dc.Name(), "", debugPci, vsanBeta, excludeCfg); hostData != nil {
 								allHostData = append(allHostData, *hostData)
 							}
 						}
@@ -101,7 +105,8 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 }
 
 // extractHostHardware fetches raw vSphere properties and maps them to the RawHostData struct.
-func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef types.ManagedObjectReference, dcName, clsName string, debugPci, vsanBeta bool, excludeCfg ExcludeConfig) *RawHostData {
+func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *property.Collector, hostRef types.ManagedObjectReference, dcName, clsName string, debugPci, vsanBeta bool, excludeCfg ExcludeConfig) *RawHostData {
+	apiVersion := client.Client.ServiceContent.About.ApiVersion
 	var hostMo mo.HostSystem
 
 	err := pc.RetrieveOne(ctx, hostRef, []string{"name", "runtime.connectionState", "summary.hardware", "hardware", "config.network", "config.storageDevice"}, &hostMo)
@@ -113,6 +118,7 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 		Datacenter: dcName,
 		Cluster:    clsName,
 		Hostname:   hostMo.Name,
+		APIVersion: apiVersion,
 	}
 
 	if hostMo.Summary.Hardware != nil {
@@ -127,7 +133,9 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 
 	pciRoles := make(map[string]string)
 	pciPnics := make(map[string]types.PhysicalNic)
-	
+	hbaKeyToPci := make(map[string]string)
+	hbaDevToPci := make(map[string]string)
+
 	if hostMo.Config != nil {
 		if hostMo.Config.Network != nil {
 			for _, pnic := range hostMo.Config.Network.Pnic {
@@ -139,11 +147,13 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 			for _, hbaBase := range hostMo.Config.StorageDevice.HostBusAdapter {
 				hba := hbaBase.GetHostHostBusAdapter()
 				if hba != nil && hba.Pci != "" {
+					hbaKeyToPci[hba.Key] = hba.Pci
+					hbaDevToPci[hba.Device] = hba.Pci
 					switch hbaBase.(type) {
 					case *types.HostFibreChannelHba:
 						pciRoles[hba.Pci] = "io card (fc)"
-					case *types.HostPcieHba: 
-						pciRoles[hba.Pci] = "nvme-disk" 
+					case *types.HostPcieHba:
+						pciRoles[hba.Pci] = "nvme-disk"
 					case *types.HostBlockHba, *types.HostSerialAttachedHba, *types.HostInternetScsiHba:
 						pciRoles[hba.Pci] = "io card (raid)"
 					default:
@@ -152,6 +162,34 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 				}
 			}
 		}
+	}
+
+	// NVMe controller firmware from NvmeTopology — available on all vSphere versions via govmomi.
+	// HostNvmeTopologyInterface.Adapter is a key or device-name reference to the HBA.
+	nvmeFirmware := make(map[string]string) // pci_id -> firmware
+	if hostMo.Config != nil && hostMo.Config.StorageDevice != nil && hostMo.Config.StorageDevice.NvmeTopology != nil {
+		for _, iface := range hostMo.Config.StorageDevice.NvmeTopology.Adapter {
+			pci := hbaKeyToPci[iface.Adapter]
+			if pci == "" {
+				pci = hbaDevToPci[iface.Adapter]
+			}
+			if pci == "" {
+				continue
+			}
+			for _, ctrl := range iface.ConnectedController {
+				if ctrl.FirmwareVersion != "" {
+					nvmeFirmware[pci] = ctrl.FirmwareVersion
+					break
+				}
+			}
+		}
+	}
+
+	// vSphere 9.1+ exposes firmwareVersion/driverVersion on HostHostBusAdapter natively,
+	// but govmomi does not yet model those fields. Retrieve them via a raw SOAP call.
+	var hba91Firmware map[string]struct{ Firmware, Driver string }
+	if isAPIVersionAtLeast(apiVersion, "9.1") {
+		hba91Firmware, _ = getHBAFirmwareViaSoap(ctx, client, hostRef)
 	}
 
 	if hostMo.Hardware != nil {
@@ -224,6 +262,9 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 				fw = pnic.FirmwareVersion
 				dv = pnic.DriverVersion
 				dn = pnic.Driver
+			} else if info, ok := hba91Firmware[pciDev.Id]; ok {
+				fw = info.Firmware
+				dv = info.Driver
 			}
 
 			if devType == "nvme-disk" {
@@ -235,13 +276,13 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 						vendor = parts[0]
 						model = parts[1]
 					}
-					
+
 					raw.Disks = append(raw.Disks, RawDiskDevice{
 						DeviceName: strings.TrimSpace(devName),
 						DeviceType: "vSAN NVMe PCIe (beta)",
 						Vendor:     strings.TrimSpace(vendor),
 						Model:      strings.TrimSpace(model),
-						Firmware:   "",
+						Firmware:   nvmeFirmware[pciDev.Id],
 					})
 				}
 				continue
@@ -320,4 +361,130 @@ func extractHostHardware(ctx context.Context, pc *property.Collector, hostRef ty
 	}
 
 	return &raw
+}
+
+// isAPIVersionAtLeast returns true if apiVersion >= minVersion (dot-separated integers).
+func isAPIVersionAtLeast(apiVersion, minVersion string) bool {
+	if apiVersion == "" {
+		return false
+	}
+	aParts := strings.Split(apiVersion, ".")
+	mParts := strings.Split(minVersion, ".")
+	for i := 0; i < len(mParts); i++ {
+		if i >= len(aParts) {
+			return false
+		}
+		a, _ := strconv.Atoi(aParts[i])
+		m, _ := strconv.Atoi(mParts[i])
+		if a > m {
+			return true
+		}
+		if a < m {
+			return false
+		}
+	}
+	return true
+}
+
+// getHBAFirmwareViaSoap retrieves HBA firmwareVersion and driverVersion via a raw SOAP call.
+// This is needed for vSphere 9.1+ where these fields exist on HostHostBusAdapter but govmomi
+// does not yet model them in its Go struct types.
+func getHBAFirmwareViaSoap(ctx context.Context, client *govmomi.Client, hostRef types.ManagedObjectReference) (map[string]struct{ Firmware, Driver string }, error) {
+	result := make(map[string]struct{ Firmware, Driver string })
+
+	sc := client.Client.Client // *soap.Client (embedded in vim25.Client)
+	sdkURL := sc.URL()
+
+	soapBody := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:vim25="urn:vim25">
+  <soapenv:Body>
+    <vim25:RetrievePropertiesEx>
+      <vim25:_this type="PropertyCollector">propertyCollector</vim25:_this>
+      <vim25:specSet>
+        <vim25:propSet>
+          <vim25:type>HostSystem</vim25:type>
+          <vim25:pathSet>config.storageDevice.hostBusAdapter</vim25:pathSet>
+        </vim25:propSet>
+        <vim25:objectSet>
+          <vim25:obj type="HostSystem">%s</vim25:obj>
+        </vim25:objectSet>
+      </vim25:specSet>
+      <vim25:options/>
+    </vim25:RetrievePropertiesEx>
+  </soapenv:Body>
+</soapenv:Envelope>`, hostRef.Value)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", sdkURL.String(), strings.NewReader(soapBody))
+	if err != nil {
+		return result, err
+	}
+	req.Header.Set("Content-Type", "text/xml; charset=utf-8")
+	req.Header.Set("SOAPAction", "urn:vim25/8.0")
+
+	var bodyData []byte
+	if err := sc.Do(ctx, req, func(resp *http.Response) error {
+		if resp.StatusCode != 200 {
+			return fmt.Errorf("SOAP call returned HTTP %d", resp.StatusCode)
+		}
+		bodyData, err = io.ReadAll(resp.Body)
+		return err
+	}); err != nil {
+		return result, err
+	}
+
+	return parseHBAFirmwareFromSOAP(bodyData), nil
+}
+
+// parseHBAFirmwareFromSOAP scans a raw SOAP XML response and extracts pci -> firmware/driver.
+// Uses a token scanner to remain namespace-agnostic and handle any HBA subtype name.
+func parseHBAFirmwareFromSOAP(data []byte) map[string]struct{ Firmware, Driver string } {
+	result := make(map[string]struct{ Firmware, Driver string })
+	dec := xml.NewDecoder(bytes.NewReader(data))
+
+	var (
+		inHBA       bool
+		pci, fw, dv string
+		cur         string
+	)
+
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			break
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			local := t.Name.Local
+			if local == "HostHostBusAdapter" || (strings.HasPrefix(local, "Host") && strings.HasSuffix(local, "Hba")) {
+				inHBA = true
+				pci, fw, dv, cur = "", "", "", ""
+			} else if inHBA {
+				cur = local
+			}
+		case xml.EndElement:
+			local := t.Name.Local
+			if inHBA && (local == "HostHostBusAdapter" || (strings.HasPrefix(local, "Host") && strings.HasSuffix(local, "Hba"))) {
+				if pci != "" && (fw != "" || dv != "") {
+					result[pci] = struct{ Firmware, Driver string }{fw, dv}
+				}
+				inHBA = false
+				cur = ""
+			} else if inHBA {
+				cur = ""
+			}
+		case xml.CharData:
+			if inHBA && cur != "" {
+				text := strings.TrimSpace(string(t))
+				switch cur {
+				case "pci":
+					pci = text
+				case "firmwareVersion":
+					fw = text
+				case "driverVersion":
+					dv = text
+				}
+			}
+		}
+	}
+	return result
 }

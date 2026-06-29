@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"text/tabwriter"
 )
 
@@ -37,7 +38,7 @@ func saveRawInventory(data []RawHostData, targetPath string) (string, error) {
 	return filePath, nil
 }
 
-func printText(data []HostComponents) {
+func printText(data []HostComponents, quiet bool) {
 	for _, hd := range data {
 		fmt.Printf("Datacenter: %s\n", hd.Datacenter)
 		clusterName := hd.Cluster
@@ -59,9 +60,46 @@ func printText(data []HostComponents) {
 		w.Flush()
 		fmt.Printf("\n---\n\n")
 	}
+
+	if quiet {
+		return
+	}
+
+	type issueEntry struct {
+		Device string
+		Reason string
+	}
+	seen := make(map[string]bool)
+	var issueList []issueEntry
+	for _, host := range data {
+		for _, issue := range host.Issues {
+			if !seen[issue.Device] {
+				seen[issue.Device] = true
+				issueList = append(issueList, issueEntry{Device: issue.Device, Reason: issue.Reason})
+			}
+		}
+	}
+	if len(issueList) > 0 {
+		sort.Slice(issueList, func(i, j int) bool { return issueList[i].Device < issueList[j].Device })
+		fmt.Println("Issues:")
+		fmt.Println("Could not get firmware/driver information for the following devices\n")
+		for _, e := range issueList {
+			if e.Reason != "" {
+				fmt.Printf("  * %s (Reason: %s)\n", e.Device, e.Reason)
+			} else {
+				fmt.Printf("  * %s\n", e.Device)
+			}
+		}
+		fmt.Println()
+	}
 }
 
-func printJSON(data []HostComponents) {
+func printJSON(data []HostComponents, quiet bool) {
+	if quiet {
+		for i := range data {
+			data[i].Issues = nil
+		}
+	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)

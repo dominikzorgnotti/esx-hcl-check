@@ -28,6 +28,7 @@ type RawHostData struct {
 	Datacenter  string          `json:"datacenter"`
 	Cluster     string          `json:"cluster"`
 	Hostname    string          `json:"hostname"`
+	APIVersion  string          `json:"api_version,omitempty"`
 	SysVendor   string          `json:"sys_vendor"`
 	SysModel    string          `json:"sys_model"`
 	BiosVersion string          `json:"bios_version"`
@@ -65,6 +66,14 @@ type VsanOfflineDB struct {
 	} `json:"data"`
 }
 
+// --- Missing Info Tracking ---
+
+type MissingDetail struct {
+	Device  string   `json:"device"`
+	Missing []string `json:"missing"`
+	Reason  string   `json:"reason,omitempty"`
+}
+
 // --- Structs for Phase 2: HCL Verification ---
 
 type HCLResult struct {
@@ -94,4 +103,5 @@ type HostComponents struct {
 	Cluster    string
 	Hostname   string
 	Results    []HCLResult
+	Issues     []MissingDetail `json:"Issues,omitempty"`
 }

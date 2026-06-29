@@ -89,6 +89,24 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					res.VID, res.DID, res.SVID, res.SSID = vidHex, didHex, svidHex, ssidHex
 				}
 
+				// Track missing firmware/driver for storage HBAs
+				if pci.DeviceType == "io card (fc)" || pci.DeviceType == "io card (raid)" {
+					var missing []string
+					if pci.Firmware == "" {
+						missing = append(missing, "firmware")
+					}
+					if pci.DriverVer == "" {
+						missing = append(missing, "driver")
+					}
+					if len(missing) > 0 {
+						reason := "vSphere API pre-9.1 does not expose HBA firmware/driver"
+						if isAPIVersionAtLeast(raw.APIVersion, "9.1") {
+							reason = "vSphere 9.1 SOAP call returned no firmware/driver for this device"
+						}
+						hostComp.Issues = append(hostComp.Issues, MissingDetail{Device: pci.DeviceName, Missing: missing, Reason: reason})
+					}
+				}
+
 				if pci.DeviceType != "unknown (debug)" {
 					// Check vSAN Offline DB First
 					foundInVsan := false
@@ -133,6 +151,15 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					FirmwareCertified: "N/A",
 				}
 
+				// Track missing firmware for vSAN disks
+				if disk.Firmware == "" {
+					reason := "SCSI firmware revision not reported by vSphere API"
+					if disk.DeviceType == "vSAN NVMe PCIe (beta)" {
+						reason = "NVMe controller not found in vSphere topology data"
+					}
+					hostComp.Issues = append(hostComp.Issues, MissingDetail{Device: disk.DeviceName, Missing: []string{"firmware"}, Reason: reason})
+				}
+
 				foundInVsan := false
 				if vsanDB != nil {
 					foundInVsan = evaluateVsanDisk(vsanDB, disk.Vendor, disk.Model, releaseVersion, &res)
@@ -147,11 +174,17 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					filters := []map[string]interface{}{}
 					cleanVen := strings.TrimSpace(disk.Vendor)
 					
-					// FIX: Do not pass generic "NVMe" to the Broadcom API to prevent HTTP 400 Bad Request errors
+					// Do not pass generic "NVMe" to the Broadcom API to prevent HTTP 400 Bad Request errors.
+					// Short/ambiguous vendor names (e.g. "HP") can also trigger 400; we retry without them below.
 					if cleanVen != "" && !strings.EqualFold(cleanVen, "NVMe") {
 						filters = append(filters, map[string]interface{}{"displayKey": "partnerName", "filterValues": []string{cleanVen}})
 					}
 					res.Certified = queryBroadcomAPI("vsan", filters, []string{disk.Model}, releaseVersion)
+
+					// Retry without the partner filter if the API rejected the request
+					if res.Certified == "ERROR" && len(filters) > 0 {
+						res.Certified = queryBroadcomAPI("vsan", nil, []string{disk.Model}, releaseVersion)
+					}
 				}
 
 				hostComp.Results = append(hostComp.Results, res)
@@ -292,23 +325,29 @@ func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCL
 	}
 
 	for _, item := range checkList {
-		itemModel := strings.ToLower(fmt.Sprintf("%v", item["model"]))
+		itemProductId := strings.ToLower(fmt.Sprintf("%v", item["productid"]))
+		itemModel := strings.ToLower(strings.TrimSpace(fmt.Sprintf("%v", item["model"])))
 		itemPartner := strings.ToLower(fmt.Sprintf("%v", item["partnername"]))
-		
-		// Check Partner
-		if !strings.Contains(itemPartner, cleanVendor) && !strings.Contains(cleanModel, itemPartner) {
-			continue
-		}
 
-		// Check Model via direct substring or strong token overlap
-		matchFound := false
-		if strings.Contains(itemModel, cleanModel) || strings.Contains(cleanModel, itemModel) {
-			matchFound = true
-		} else {
-			for _, token := range strongTokens {
-				if strings.Contains(itemModel, token) {
-					matchFound = true
-					break
+		// 1. Exact productid match — vSphere reports the part number as the model string,
+		//    which maps directly to productid in the HCL (e.g. "MO000800JWFWP").
+		//    Product IDs are globally unique so no partner check is required.
+		matchFound := strings.EqualFold(cleanModel, itemProductId)
+
+		// 2. Model/partner fuzzy matching fallback
+		if !matchFound {
+			partnerOK := strings.Contains(itemPartner, cleanVendor) || strings.Contains(cleanModel, itemPartner)
+			if !partnerOK {
+				continue
+			}
+			if strings.Contains(itemModel, cleanModel) || strings.Contains(cleanModel, itemModel) {
+				matchFound = true
+			} else {
+				for _, token := range strongTokens {
+					if strings.Contains(itemModel, token) {
+						matchFound = true
+						break
+					}
 				}
 			}
 		}
@@ -435,7 +474,18 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 		return aggregatedResults[i].DeviceType < aggregatedResults[j].DeviceType
 	})
 
-	return []HostComponents{{Datacenter: "Global", Cluster: "(Aggregated Deduplication)", Hostname: "All Scanned Hosts", Results: aggregatedResults}}
+	issuesSeen := make(map[string]bool)
+	var aggregatedIssues []MissingDetail
+	for _, host := range data {
+		for _, issue := range host.Issues {
+			if !issuesSeen[issue.Device] {
+				issuesSeen[issue.Device] = true
+				aggregatedIssues = append(aggregatedIssues, issue)
+			}
+		}
+	}
+
+	return []HostComponents{{Datacenter: "Global", Cluster: "(Aggregated Deduplication)", Hostname: "All Scanned Hosts", Results: aggregatedResults, Issues: aggregatedIssues}}
 }
 
 func buildHexQueryURL(releaseVersion string, vid, did, svid, ssid int16) string {
