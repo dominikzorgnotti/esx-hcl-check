@@ -155,8 +155,8 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 						pciRoles[hba.Pci] = "io card (fc)"
 					case *types.HostPcieHba:
 						pciRoles[hba.Pci] = "nvme-disk"
-						if hba.DriverName != "" {
-							nvmeDriverName[hba.Pci] = hba.DriverName
+						if hba.Driver != "" {
+							nvmeDriverName[hba.Pci] = hba.Driver
 						}
 					case *types.HostBlockHba, *types.HostSerialAttachedHba, *types.HostInternetScsiHba:
 						pciRoles[hba.Pci] = "io card (raid)"
