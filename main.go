@@ -20,7 +20,7 @@ func main() {
 		noHCL       = flag.Bool("nohcl", false, "Skip the HCL check phase and only collect vSphere data")
 		detailsOut  = flag.Bool("details", false, "Include unique IDs (VID, DID, SSID, CPUID) in the JSON output")
 		debugPci    = flag.Bool("debugpci", false, "Bypass PCI filters and dump all raw PCI devices into the JSON file for troubleshooting")
-		vsanBeta    = flag.Bool("vsan", false, "BETA: Extract vSAN SSD disks")
+		vsanBeta    = flag.Bool("vsan", false, "Extract vSAN SSD and NVMe disks and check against the vSAN HCL database")
 		uniqueOut   = flag.Bool("unique", false, "Aggregate and deduplicate output across all hosts globally")
 		excludeFile = flag.String("exclude", "exclude.json", "Path to the exclude JSON file to filter out specific devices")
 		vsanHclFile = flag.String("vsanhcl", "vsan-offline-hcl.json", "Path to the local vSAN HCL offline JSON database")

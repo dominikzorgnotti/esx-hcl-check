@@ -73,7 +73,8 @@ Once your variables are set, run the tool with the mandatory release parameter:
 | `-mismatch` | Filters the output to ONLY show certified hardware that has an unsupported Firmware or Driver installed. | `false` |
 | `-json` | Outputs the final HCL evaluation results as a JSON payload instead of a text table. | `false` |
 | `-details` | Includes raw hardware identifiers (VID, DID, SVID, SSID) and supported firmware/driver arrays in the JSON. *Auto-enables -json*. | `false` |
-| `-vsan` | **[BETA]** Extracts vSAN SSDs and NVMe drives and checks them against the vSAN HCL database. | `false` |
+| `-vsan` | Extracts vSAN SSDs and NVMe drives and checks them against the vSAN HCL database. | `false` |
+| `-quiet` | Suppresses the Issues section that lists devices for which firmware/driver information could not be retrieved. | `false` |
 | `-debugpci` | Bypasses I/O filters and dumps all unknown PCI devices into the raw JSON file for troubleshooting. | `false` |
 | `-nohcl` | Skips the Broadcom HCL validation phase entirely. Useful to just extract the vSphere hardware payload. | `false` |
 

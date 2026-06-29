@@ -82,7 +82,7 @@ func printText(data []HostComponents, quiet bool) {
 	if len(issueList) > 0 {
 		sort.Slice(issueList, func(i, j int) bool { return issueList[i].Device < issueList[j].Device })
 		fmt.Println("Issues:")
-		fmt.Println("Could not get firmware/driver information for the following devices\n")
+		fmt.Println("Could not get firmware/driver information for the following devices")
 		for _, e := range issueList {
 			if e.Reason != "" {
 				fmt.Printf("  * %s (Reason: %s)\n", e.Device, e.Reason)
