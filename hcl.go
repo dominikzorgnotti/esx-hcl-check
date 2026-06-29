@@ -302,7 +302,11 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 						res.SupportedDrivers = append(res.SupportedDrivers, fmt.Sprintf("%s %s", drvName, drvVer))
 						hclBaseDrvVer := strings.Split(drvVer, "-")[0]
 						if strings.Contains(strings.ToLower(res.DriverName), strings.ToLower(drvName)) {
-							if strings.EqualFold(cleanHostDrvVer, drvVer) || strings.EqualFold(cleanHostDrvVer, hclBaseDrvVer) {
+							// Prefix match handles build-qualifier suffixes: installed
+							// "1.4.0.8-1vmw.910.0.25370933" matches HCL "1.4.0.8-1vmw.910".
+							if strings.EqualFold(cleanHostDrvVer, drvVer) ||
+								strings.EqualFold(cleanHostDrvVer, hclBaseDrvVer) ||
+								strings.HasPrefix(strings.ToLower(cleanHostDrvVer), strings.ToLower(drvVer)) {
 								res.DriverCertified = "TRUE"
 							}
 						}
@@ -408,23 +412,60 @@ func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCL
 			cleanHostFw := strings.TrimSpace(res.Firmware)
 
 			if fwList, ok := relData.([]interface{}); ok {
+				// SATA/SAS SSD-style: flat array [{firmware:"…"}, …]
 				for _, fwItem := range fwList {
-					fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwItem.(map[string]interface{})["firmware"]))
-
-					// Deduplicate the array when pushing to supported_firmwares
-					existsInList := false
-					for _, existingFw := range res.SupportedFirmwares {
-						if existingFw == fwStr {
-							existsInList = true
-							break
+					if fwMap, ok := fwItem.(map[string]interface{}); ok {
+						fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwMap["firmware"]))
+						existsInList := false
+						for _, existingFw := range res.SupportedFirmwares {
+							if existingFw == fwStr { existsInList = true; break }
+						}
+						if !existsInList {
+							res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
+						}
+						if cleanHostFw != "" && strings.EqualFold(cleanHostFw, fwStr) {
+							res.FirmwareCertified = "TRUE"
 						}
 					}
-					if !existsInList {
-						res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
-					}
-
-					if cleanHostFw != "" && strings.EqualFold(cleanHostFw, fwStr) {
-						res.FirmwareCertified = "TRUE"
+				}
+			} else if relMap, ok := relData.(map[string]interface{}); ok {
+				// NVMe SSD-style: same map structure as controller entries
+				// (NVMe SSDs in data.ssd use driverName → version → {firmwares:[…]})
+				cleanHostDrvVer := strings.TrimSpace(res.DriverVer)
+				if res.DriverName != "" && res.DriverVer != "" { res.DriverCertified = "FALSE" }
+				for drvName, drvObj := range relMap {
+					if drvName == "vsanSupport" || drvName == "deviceSupport" { continue }
+					drvVersions, ok := drvObj.(map[string]interface{})
+					if !ok { continue }
+					for drvVer, drvDetails := range drvVersions {
+						res.SupportedDrivers = append(res.SupportedDrivers, fmt.Sprintf("%s %s", drvName, drvVer))
+						hclBaseDrvVer := strings.Split(drvVer, "-")[0]
+						if strings.Contains(strings.ToLower(res.DriverName), strings.ToLower(drvName)) {
+							if strings.EqualFold(cleanHostDrvVer, drvVer) ||
+								strings.EqualFold(cleanHostDrvVer, hclBaseDrvVer) ||
+								strings.HasPrefix(strings.ToLower(cleanHostDrvVer), strings.ToLower(drvVer)) {
+								res.DriverCertified = "TRUE"
+							}
+						}
+						if detailMap, ok := drvDetails.(map[string]interface{}); ok {
+							if fwList2, ok := detailMap["firmwares"].([]interface{}); ok {
+								for _, fwItem := range fwList2 {
+									if fwMap, ok := fwItem.(map[string]interface{}); ok {
+										fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwMap["firmware"]))
+										existsInList := false
+										for _, existingFw := range res.SupportedFirmwares {
+											if existingFw == fwStr { existsInList = true; break }
+										}
+										if !existsInList {
+											res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
+										}
+										if cleanHostFw != "" && strings.EqualFold(cleanHostFw, fwStr) {
+											res.FirmwareCertified = "TRUE"
+										}
+									}
+								}
+							}
+						}
 					}
 				}
 			}
