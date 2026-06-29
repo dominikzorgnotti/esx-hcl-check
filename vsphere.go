@@ -135,6 +135,7 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 	pciPnics := make(map[string]types.PhysicalNic)
 	hbaKeyToPci := make(map[string]string)
 	hbaDevToPci := make(map[string]string)
+	nvmeDriverName := make(map[string]string) // pci_id -> driverName (HostHostBusAdapter.DriverName)
 
 	if hostMo.Config != nil {
 		if hostMo.Config.Network != nil {
@@ -154,6 +155,9 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 						pciRoles[hba.Pci] = "io card (fc)"
 					case *types.HostPcieHba:
 						pciRoles[hba.Pci] = "nvme-disk"
+						if hba.DriverName != "" {
+							nvmeDriverName[hba.Pci] = hba.DriverName
+						}
 					case *types.HostBlockHba, *types.HostSerialAttachedHba, *types.HostInternetScsiHba:
 						pciRoles[hba.Pci] = "io card (raid)"
 					default:
@@ -279,10 +283,16 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 
 					raw.Disks = append(raw.Disks, RawDiskDevice{
 						DeviceName: strings.TrimSpace(devName),
-						DeviceType: "vSAN NVMe PCIe (beta)",
+						DeviceType: "vSAN NVMe PCIe",
 						Vendor:     strings.TrimSpace(vendor),
 						Model:      strings.TrimSpace(model),
 						Firmware:   nvmeFirmware[pciDev.Id],
+						DriverName: nvmeDriverName[pciDev.Id],
+						DriverVer:  dv,
+						VID:        pciDev.VendorId,
+						DID:        pciDev.DeviceId,
+						SVID:       pciDev.SubVendorId,
+						SSID:       pciDev.SubDeviceId,
 					})
 				}
 				continue
@@ -348,7 +358,7 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 						if !excluded {
 							raw.Disks = append(raw.Disks, RawDiskDevice{
 								DeviceName: diskName,
-								DeviceType: "vSAN SSD (beta)",
+								DeviceType: "vSAN SSD",
 								Vendor:     vendor,
 								Model:      model,
 								Firmware:   strings.TrimSpace(disk.Revision),

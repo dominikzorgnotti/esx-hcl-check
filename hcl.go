@@ -133,40 +133,62 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		}
 
 		// 4. SSD/HDD Disks
-		type diskKey struct { Vendor, Model, Firmware string }
+		type diskKey struct{ Vendor, Model, Firmware, DriverName, DriverVer string }
 		diskMap := make(map[diskKey]int)
 
 		for _, disk := range raw.Disks {
-			k := diskKey{Vendor: disk.Vendor, Model: disk.Model, Firmware: disk.Firmware}
+			k := diskKey{Vendor: disk.Vendor, Model: disk.Model, Firmware: disk.Firmware, DriverName: disk.DriverName, DriverVer: disk.DriverVer}
 
 			if idx, found := diskMap[k]; found {
 				hostComp.Results[idx].Instances++
 			} else {
 				res := HCLResult{
-					Device:     disk.DeviceName,
-					DeviceType: disk.DeviceType,
-					Instances:  1,
-					Firmware:   disk.Firmware,
-					DriverCertified: "N/A",
+					Device:            disk.DeviceName,
+					DeviceType:        disk.DeviceType,
+					Instances:         1,
+					Firmware:          disk.Firmware,
+					DriverName:        disk.DriverName,
+					DriverVer:         disk.DriverVer,
+					DriverCertified:   "N/A",
 					FirmwareCertified: "N/A",
 				}
 
 				// Track missing firmware for vSAN disks
 				if disk.Firmware == "" {
 					reason := "SCSI firmware revision not reported by vSphere API"
-					if disk.DeviceType == "vSAN NVMe PCIe (beta)" {
+					if disk.DeviceType == "vSAN NVMe PCIe" {
 						reason = "NVMe controller not found in vSphere topology data"
 					}
 					hostComp.Issues = append(hostComp.Issues, MissingDetail{Device: disk.DeviceName, Missing: []string{"firmware"}, Reason: reason})
 				}
 
+				// Track missing driver version for NVMe PCIe controllers
+				if disk.DeviceType == "vSAN NVMe PCIe" && disk.DriverVer == "" {
+					reason := "vSphere API pre-9.1 does not expose NVMe controller driver version"
+					if isAPIVersionAtLeast(raw.APIVersion, "9.1") {
+						reason = "vSphere 9.1 SOAP call returned no driver version for this NVMe controller"
+					}
+					hostComp.Issues = append(hostComp.Issues, MissingDetail{Device: disk.DeviceName, Missing: []string{"driver"}, Reason: reason})
+				}
+
 				foundInVsan := false
 				if vsanDB != nil {
-					foundInVsan = evaluateVsanDisk(vsanDB, disk.Vendor, disk.Model, releaseVersion, &res)
+					// For NVMe PCIe controllers, check the controller DB by PCI ID first —
+					// this gives driver arrays + firmware arrays, which the SSD DB does not have.
+					if disk.DeviceType == "vSAN NVMe PCIe" && (disk.VID != 0 || disk.DID != 0) {
+						vidHex := fmt.Sprintf("%04x", uint16(disk.VID))
+						didHex := fmt.Sprintf("%04x", uint16(disk.DID))
+						svidHex := fmt.Sprintf("%04x", uint16(disk.SVID))
+						ssidHex := fmt.Sprintf("%04x", uint16(disk.SSID))
+						foundInVsan = evaluateVsanPCI(vsanDB, vidHex, didHex, svidHex, ssidHex, releaseVersion, &res)
+					}
+					if !foundInVsan {
+						foundInVsan = evaluateVsanDisk(vsanDB, disk.Vendor, disk.Model, releaseVersion, &res)
+					}
 				}
 
 				if !foundInVsan {
-					if disk.DeviceType == "vSAN NVMe PCIe (beta)" {
+					if disk.DeviceType == "vSAN NVMe PCIe" {
 						res.HCLLink = buildVsanNvmeQueryURL(disk.Vendor, disk.Model, releaseVersion)
 					} else {
 						res.HCLLink = buildDiskQueryURL(disk.Vendor, disk.Model, releaseVersion)
@@ -261,8 +283,8 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 			if !exists { return true }
 			
 			res.Certified = "TRUE"
-			
-			if res.DriverName != "" { res.DriverCertified = "FALSE" }
+
+			if res.DriverName != "" && res.DriverVer != "" { res.DriverCertified = "FALSE" }
 			if res.Firmware != "" { res.FirmwareCertified = "FALSE" }
 
 			cleanHostDrvVer := strings.TrimSpace(res.DriverVer)

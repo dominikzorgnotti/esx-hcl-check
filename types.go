@@ -22,6 +22,12 @@ type RawDiskDevice struct {
 	Vendor     string `json:"vendor"`
 	Model      string `json:"model"`
 	Firmware   string `json:"firmware"`
+	DriverName string `json:"driver_name,omitempty"`
+	DriverVer  string `json:"driver_version,omitempty"`
+	VID        int16  `json:"vid,omitempty"`
+	DID        int16  `json:"did,omitempty"`
+	SVID       int16  `json:"svid,omitempty"`
+	SSID       int16  `json:"ssid,omitempty"`
 }
 
 type RawHostData struct {

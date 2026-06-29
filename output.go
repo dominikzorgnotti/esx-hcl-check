@@ -95,15 +95,26 @@ func printText(data []HostComponents, quiet bool) {
 }
 
 func printJSON(data []HostComponents, quiet bool) {
-	if quiet {
-		for i := range data {
-			data[i].Issues = nil
+	var allIssues []MissingDetail
+	for i := range data {
+		if !quiet {
+			allIssues = append(allIssues, data[i].Issues...)
 		}
+		data[i].Issues = nil
 	}
+
+	out := struct {
+		Results []HostComponents `json:"results"`
+		Issues  []MissingDetail  `json:"issues,omitempty"`
+	}{
+		Results: data,
+		Issues:  allIssues,
+	}
+
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(data); err != nil {
+	if err := enc.Encode(out); err != nil {
 		fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
 	}
 }
