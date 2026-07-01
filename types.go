@@ -35,6 +35,7 @@ type RawHostData struct {
 	Datacenter  string          `json:"datacenter"`
 	Cluster     string          `json:"cluster"`
 	Hostname    string          `json:"hostname"`
+	SkipReason  string          `json:"skip_reason,omitempty"`
 	APIVersion  string          `json:"api_version,omitempty"`
 	SysVendor   string          `json:"sys_vendor"`
 	SysModel    string          `json:"sys_model"`
@@ -111,6 +112,7 @@ type HostComponents struct {
 	Datacenter string          `json:"datacenter"`
 	Cluster    string          `json:"cluster"`
 	Hostname   string          `json:"hostname"`
+	SkipReason string          `json:"skip_reason,omitempty"`
 	Results    []HCLResult     `json:"results"`
 	Issues     []MissingDetail `json:"issues,omitempty"`
 }

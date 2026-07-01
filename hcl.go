@@ -91,6 +91,14 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 			Datacenter: raw.Datacenter,
 			Cluster:    raw.Cluster,
 			Hostname:   raw.Hostname,
+			SkipReason: raw.SkipReason,
+		}
+
+		// A skipped host/cluster has no hardware to evaluate — carry the reason
+		// through to the output and move on.
+		if raw.SkipReason != "" {
+			results = append(results, hostComp)
+			continue
 		}
 
 		// 1. System Chassis

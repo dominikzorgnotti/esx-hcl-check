@@ -119,6 +119,12 @@ func applyFilters(data []HostComponents, showUnsupported, showMismatch bool) []H
 
 	var filtered []HostComponents
 	for _, host := range data {
+		// Always keep skipped hosts/clusters visible — a host we could not scan
+		// is exactly the kind of thing -unsupported/-mismatch users need to see.
+		if host.SkipReason != "" {
+			filtered = append(filtered, host)
+			continue
+		}
 		var keepRes []HCLResult
 		for _, res := range host.Results {
 			if showUnsupported && res.Certified == "FALSE" {

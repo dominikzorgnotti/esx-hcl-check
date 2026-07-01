@@ -138,6 +138,15 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 		for _, cluster := range clusters {
 			hosts, err := cluster.Hosts(ctx)
 			if err != nil {
+				// Cannot enumerate this cluster's hosts (commonly missing
+				// permissions). Record a skipped-cluster entry so the failure is
+				// visible instead of a silently-absent cluster.
+				allHostData = append(allHostData, RawHostData{
+					Source:     client.Client.URL().Host,
+					Datacenter: dc.Name(),
+					Cluster:    cluster.Name(),
+					SkipReason: fmt.Sprintf("could not enumerate hosts: %v", err),
+				})
 				continue
 			}
 			for _, hostRef := range hosts {
@@ -160,6 +169,13 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 								allHostData = append(allHostData, *hostData)
 							}
 						}
+					} else {
+						allHostData = append(allHostData, RawHostData{
+							Source:     client.Client.URL().Host,
+							Datacenter: dc.Name(),
+							Cluster:    "",
+							SkipReason: fmt.Sprintf("could not enumerate standalone host %s: %v", cr.Name(), err),
+						})
 					}
 				}
 			}
@@ -174,8 +190,34 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 	var hostMo mo.HostSystem
 
 	err := pc.RetrieveOne(ctx, hostRef, []string{"name", "runtime.connectionState", "summary.hardware", "hardware", "config.network", "config.storageDevice"}, &hostMo)
-	if err != nil || hostMo.Runtime.ConnectionState != types.HostSystemConnectionStateConnected {
-		return nil
+	if err != nil {
+		// Could not read this host's properties (RBAC, network, or a transient
+		// API error). Surface it as a skipped host instead of silently dropping
+		// it, so "no visibility into this host" is distinguishable from a clean
+		// scan. hostMo.Name is likely empty here, so fall back to the MoRef.
+		name := hostMo.Name
+		if name == "" {
+			name = hostRef.Value
+		}
+		return &RawHostData{
+			Source:     client.Client.URL().Host,
+			Datacenter: dcName,
+			Cluster:    clsName,
+			Hostname:   name,
+			SkipReason: fmt.Sprintf("property-collector-error: %v", err),
+		}
+	}
+	if hostMo.Runtime.ConnectionState != types.HostSystemConnectionStateConnected {
+		// Host is reachable in the inventory but not connected (disconnected /
+		// notResponding). Report the state rather than dropping it — this is an
+		// expected condition the operator should still see.
+		return &RawHostData{
+			Source:     client.Client.URL().Host,
+			Datacenter: dcName,
+			Cluster:    clsName,
+			Hostname:   hostMo.Name,
+			SkipReason: fmt.Sprintf("host not connected (state: %s)", hostMo.Runtime.ConnectionState),
+		}
 	}
 
 	raw := RawHostData{
