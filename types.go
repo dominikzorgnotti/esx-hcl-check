@@ -106,9 +106,9 @@ type HCLResult struct {
 }
 
 type HostComponents struct {
-	Datacenter string
-	Cluster    string
-	Hostname   string
-	Results    []HCLResult
-	Issues     []MissingDetail `json:"Issues,omitempty"`
+	Datacenter string          `json:"datacenter"`
+	Cluster    string          `json:"cluster"`
+	Hostname   string          `json:"hostname"`
+	Results    []HCLResult     `json:"results"`
+	Issues     []MissingDetail `json:"issues,omitempty"`
 }
