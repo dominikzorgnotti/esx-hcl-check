@@ -84,13 +84,23 @@ func saveRawInventory(data []RawHostData, targetPath string) (string, error) {
 
 func printText(data []HostComponents, quiet bool) {
 	for _, hd := range data {
+		if hd.Source != "" {
+			fmt.Printf("vCenter: %s\n", hd.Source)
+		}
 		fmt.Printf("Datacenter: %s\n", hd.Datacenter)
 		clusterName := hd.Cluster
 		if clusterName == "" {
 			clusterName = "(Standalone)"
 		}
 		fmt.Printf("Cluster: %s\n", clusterName)
-		fmt.Printf("Host: %s\n\n", hd.Hostname)
+		if hd.Hostname != "" {
+			fmt.Printf("Host: %s\n", hd.Hostname)
+		}
+		if hd.SkipReason != "" {
+			fmt.Printf("SKIPPED: %s\n\n---\n\n", hd.SkipReason)
+			continue
+		}
+		fmt.Printf("\n")
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 		fmt.Fprintln(w, "------------------------------------------------------------------------------------------------------------------------------------------------")

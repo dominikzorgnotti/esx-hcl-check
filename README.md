@@ -98,6 +98,24 @@ Once your variables are set, run the tool with the mandatory release parameter:
 ./esx-hcl-check -release="ESXi 9.1" -unique -json -details -vsan
 ```
 
+## **🚦 Exit Codes**
+
+The process exit code reflects the scan findings, so `esx-hcl-check` can be used directly as a pre-upgrade gate in CI/CD without parsing its output:
+
+| Code | Meaning |
+| ----- | ----- |
+| `0` | Every scanned component is certified (or not applicable). |
+| `1` | At least one component is definitively **not** certified. |
+| `2` | The result could not be fully determined — a host or cluster was skipped (disconnected, in maintenance, or a permissions/API error), an HCL lookup failed, or a fatal run error occurred (connection, inventory, or file write). A `2` takes precedence over a `1`. |
+
+## **🔀 Output Streams**
+
+Only report data is written to **stdout** — the text table, or the JSON payload with `-json`. All diagnostics (progress messages, warnings, and errors) go to **stderr**. This means you can safely pipe or redirect the report (`> report.json`) without diagnostics contaminating it.
+
+## **⏭️ Skipped Hosts**
+
+Hosts that cannot be scanned are no longer silently dropped. Each appears in the output with a `skip_reason` (e.g. `host not connected (state: disconnected)`, `property-collector-error: ...`, or `could not enumerate hosts: ...`), and the JSON also carries a `source` field identifying the originating vCenter.
+
 ## **🧠 Architecture: vSAN Offline DB & Firmware Limitations**
 
 Because Broadcom's live REST API does not easily expose deep firmware and driver matrices for unauthenticated queries, this tool relies on a hybrid approach for maximum accuracy:

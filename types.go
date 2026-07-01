@@ -1,6 +1,58 @@
 package main
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
+
+// CertStatus is a certification verdict. It exists so the code cannot confuse a
+// real answer with a lookup failure: a Broadcom API error is CertError, which is
+// distinct from CertFalse ("checked, not certified"). It marshals to/from the
+// historical "TRUE"/"FALSE"/"N/A"/"ERROR" strings so the -json wire format is
+// unchanged. The zero value is CertNA.
+type CertStatus int
+
+const (
+	CertNA    CertStatus = iota // "N/A"   — not applicable / not determined
+	CertTrue                    // "TRUE"  — certified
+	CertFalse                   // "FALSE" — checked, not certified
+	CertError                   // "ERROR" — lookup failed; result unknown
+)
+
+func (c CertStatus) String() string {
+	switch c {
+	case CertTrue:
+		return "TRUE"
+	case CertFalse:
+		return "FALSE"
+	case CertError:
+		return "ERROR"
+	default:
+		return "N/A"
+	}
+}
+
+func (c CertStatus) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + c.String() + `"`), nil
+}
+
+func (c *CertStatus) UnmarshalJSON(b []byte) error {
+	*c = parseCertStatus(strings.Trim(string(b), `"`))
+	return nil
+}
+
+func parseCertStatus(s string) CertStatus {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "TRUE":
+		return CertTrue
+	case "FALSE":
+		return CertFalse
+	case "ERROR":
+		return CertError
+	default:
+		return CertNA
+	}
+}
 
 // --- Structs for Phase 1: Raw vSphere Data Collection ---
 
@@ -31,9 +83,11 @@ type RawDiskDevice struct {
 }
 
 type RawHostData struct {
+	Source      string          `json:"source,omitempty"`
 	Datacenter  string          `json:"datacenter"`
 	Cluster     string          `json:"cluster"`
 	Hostname    string          `json:"hostname"`
+	SkipReason  string          `json:"skip_reason,omitempty"`
 	APIVersion  string          `json:"api_version,omitempty"`
 	SysVendor   string          `json:"sys_vendor"`
 	SysModel    string          `json:"sys_model"`
@@ -90,9 +144,9 @@ type HCLResult struct {
 	Firmware           string   `json:"current_firmware"`
 	DriverVer          string   `json:"current_driver_version"`
 	DriverName         string   `json:"driver_name"`
-	Certified          string   `json:"hw_certified"`
-	DriverCertified    string   `json:"driver_certified"`
-	FirmwareCertified  string   `json:"firmware_certified"`
+	Certified          CertStatus `json:"hw_certified"`
+	DriverCertified    CertStatus `json:"driver_certified"`
+	FirmwareCertified  CertStatus `json:"firmware_certified"`
 	SupportedDrivers   []string `json:"supported_drivers,omitempty"`
 	SupportedFirmwares []string `json:"supported_firmwares,omitempty"`
 	HCLLink            string   `json:"hcl"`
@@ -106,9 +160,11 @@ type HCLResult struct {
 }
 
 type HostComponents struct {
-	Datacenter string
-	Cluster    string
-	Hostname   string
-	Results    []HCLResult
-	Issues     []MissingDetail `json:"Issues,omitempty"`
+	Source     string          `json:"source,omitempty"`
+	Datacenter string          `json:"datacenter"`
+	Cluster    string          `json:"cluster"`
+	Hostname   string          `json:"hostname"`
+	SkipReason string          `json:"skip_reason,omitempty"`
+	Results    []HCLResult     `json:"results"`
+	Issues     []MissingDetail `json:"issues,omitempty"`
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"regexp"
 )
@@ -31,9 +30,9 @@ func main() {
 	flag.Parse()
 
 	if *esxiRelease == "" {
-		fmt.Println("Error: The -release parameter is mandatory.")
-		fmt.Println("Hint: The input should match the 'Product Release Version' on the Compatibility Guide, e.g. 'ESXi 9.1' or 'ESXi 8.0 U3'")
-		os.Exit(1)
+		fmt.Fprintln(os.Stderr, "Error: The -release parameter is mandatory.")
+		fmt.Fprintln(os.Stderr, "Hint: The input should match the 'Product Release Version' on the Compatibility Guide, e.g. 'ESXi 9.1' or 'ESXi 8.0 U3'")
+		os.Exit(2)
 	}
 
 	if *detailsOut {
@@ -61,29 +60,31 @@ func main() {
 	// ---------------------------------------------------------
 	client, err := connectToVC(ctx)
 	if err != nil {
-		log.Fatalf("Error connecting to vCenter: %v", err)
+		fmt.Fprintf(os.Stderr, "Error connecting to vCenter: %v\n", err)
+		os.Exit(2)
 	}
 	
 	if !*jsonOutput {
-		fmt.Printf("# Connecting to %s ...\n", client.Client.URL().Host)
-		fmt.Println("# Collecting inventory and hardware data...")
+		fmt.Fprintf(os.Stderr, "# Connecting to %s ...\n", client.Client.URL().Host)
+		fmt.Fprintln(os.Stderr, "# Collecting inventory and hardware data...")
 	}
 
 	rawInventory, err := collectVSphereData(ctx, client, *dcTarget, *clsTarget, *debugPci, *vsanBeta, excludeCfg)
 	if err != nil {
 		client.Logout(ctx)
-		log.Fatalf("Error discovering inventory: %v", err)
+		fmt.Fprintf(os.Stderr, "Error discovering inventory: %v\n", err)
+		os.Exit(2)
 	}
 	client.Logout(ctx)
 
 	savedPath, err := saveRawInventory(rawInventory, *vsphereJson)
 	if err != nil {
-		log.Fatalf("Failed to save raw inventory JSON: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to save raw inventory JSON: %v\n", err)
+		os.Exit(2)
 	}
 
-	// FIXED: Restored the savedPath print statement to clear the unused variable error
 	if !*jsonOutput {
-		fmt.Printf("# Raw inventory saved to: %s\n\n", savedPath)
+		fmt.Fprintf(os.Stderr, "# Raw inventory saved to: %s\n\n", savedPath)
 	}
 
 	if *noHCL {
@@ -94,6 +95,10 @@ func main() {
 	// PHASE 2: HCL Verification (API + vSAN DB)
 	// ---------------------------------------------------------
 	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci, *vsanHclFile)
+
+	// Compute the exit code from the complete result set, before -unique/filters
+	// drop entries, so the process status always reflects the true findings.
+	exitCode := computeExitCode(hclResults)
 
 	if *uniqueOut {
 		hclResults = aggregateUnique(hclResults)
@@ -110,6 +115,38 @@ func main() {
 	} else {
 		printText(hclResults, *quiet)
 	}
+
+	os.Exit(exitCode)
+}
+
+// computeExitCode maps scan findings to a process exit code for CI/CD gating:
+//
+//	0 — every component is certified (or not applicable)
+//	1 — at least one component is definitively NOT certified
+//	2 — the scan could not be fully determined: a host/cluster was skipped, or
+//	    an HCL lookup failed (CertError). 2 takes precedence over 1, because an
+//	    incomplete answer should not read as a clean "only known-bad found".
+//
+// Fatal run errors (connect/collect/save) also exit 2, handled at their sites.
+func computeExitCode(data []HostComponents) int {
+	foundUncertified := false
+	for _, host := range data {
+		if host.SkipReason != "" {
+			return 2
+		}
+		for _, res := range host.Results {
+			if res.Certified == CertError {
+				return 2
+			}
+			if res.Certified == CertFalse {
+				foundUncertified = true
+			}
+		}
+	}
+	if foundUncertified {
+		return 1
+	}
+	return 0
 }
 
 func applyFilters(data []HostComponents, showUnsupported, showMismatch bool) []HostComponents {
@@ -119,11 +156,17 @@ func applyFilters(data []HostComponents, showUnsupported, showMismatch bool) []H
 
 	var filtered []HostComponents
 	for _, host := range data {
+		// Always keep skipped hosts/clusters visible — a host we could not scan
+		// is exactly the kind of thing -unsupported/-mismatch users need to see.
+		if host.SkipReason != "" {
+			filtered = append(filtered, host)
+			continue
+		}
 		var keepRes []HCLResult
 		for _, res := range host.Results {
-			if showUnsupported && res.Certified == "FALSE" {
+			if showUnsupported && res.Certified == CertFalse {
 				keepRes = append(keepRes, res)
-			} else if showMismatch && res.Certified == "TRUE" && (res.DriverCertified == "FALSE" || res.FirmwareCertified == "FALSE") {
+			} else if showMismatch && res.Certified == CertTrue && (res.DriverCertified == CertFalse || res.FirmwareCertified == CertFalse) {
 				keepRes = append(keepRes, res)
 			}
 		}
