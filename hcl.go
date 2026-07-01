@@ -13,6 +13,12 @@ import (
 	"time"
 )
 
+// broadcomHTTPClient bounds all outbound Broadcom HCL calls (vSAN DB download and
+// the compatibility-guide API) so a slow or hung endpoint cannot stall the scan
+// indefinitely. Runs are sequential and per-device, so a missing timeout here is
+// the single biggest hang risk in large environments.
+var broadcomHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 // performHCLChecks processes the raw inventory and maps it to Broadcom search queries.
 func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci bool, vsanHclPath string) []HostComponents {
 
@@ -244,7 +250,7 @@ func loadVsanHCL(path string) (*VsanOfflineDB, error) {
 	}
 
 	if needsDownload {
-		resp, err := http.Get("https://vvs.broadcom.com/service/vsan/all.json")
+		resp, err := broadcomHTTPClient.Get("https://vvs.broadcom.com/service/vsan/all.json")
 		if err == nil && resp.StatusCode == 200 {
 			defer resp.Body.Close()
 			b, _ := io.ReadAll(resp.Body)
@@ -496,7 +502,7 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 
 	jsonData, _ := json.Marshal(reqBody)
 	urlStr := "https://compatibilityguide.broadcom.com/compguide/programs/viewResults?limit=20&page=1&sortBy=&sortType=ASC"
-	resp, err := http.Post(urlStr, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := broadcomHTTPClient.Post(urlStr, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil || resp.StatusCode != 200 {
 		if resp != nil { resp.Body.Close() }
 		return "ERROR"

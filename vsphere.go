@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/vmware/govmomi"
 	"github.com/vmware/govmomi/find"
@@ -18,6 +22,14 @@ import (
 	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/soap"
 	"github.com/vmware/govmomi/vim25/types"
+)
+
+const (
+	// vcConnectTimeout bounds the vCenter connect + login so an unreachable or
+	// misconfigured GOVC_URL fails fast instead of hanging indefinitely.
+	vcConnectTimeout = 30 * time.Second
+	// soapCallTimeout bounds each raw SOAP HBA firmware call (vSphere 9.1+ path).
+	soapCallTimeout = 30 * time.Second
 )
 
 // connectToVC initializes the govmomi client using GOVC_* environment variables.
@@ -40,7 +52,59 @@ func connectToVC(ctx context.Context) (*govmomi.Client, error) {
 
 	insecure := strings.ToLower(os.Getenv("GOVC_INSECURE")) == "true" || os.Getenv("GOVC_INSECURE") == "1"
 
-	return govmomi.NewClient(ctx, u, insecure)
+	connCtx, cancel := context.WithTimeout(ctx, vcConnectTimeout)
+	defer cancel()
+
+	client, err := govmomi.NewClient(connCtx, u, insecure)
+	if err != nil {
+		return nil, classifyConnectError(connCtx, u.Host, err)
+	}
+	return client, nil
+}
+
+// classifyConnectError turns a raw govmomi/soap connection failure into an
+// actionable message that distinguishes timeout, DNS, TLS, and auth problems,
+// so an admin can tell "wrong password" from "host unreachable" at a glance.
+//
+// OS-level failures (timeout, DNS, connection refused) are matched on their
+// typed errors rather than message text, because the underlying OS strings are
+// localized (e.g. German Windows) and would otherwise slip through. TLS and
+// auth failures are matched on substrings, since those come from Go's crypto/tls
+// and vCenter's SOAP faults respectively and are not OS-localized.
+func classifyConnectError(ctx context.Context, host string, err error) error {
+	// Extract the OS-level socket errno once. On Windows these use the WSA* range
+	// (10060 = WSAETIMEDOUT, 10061 = WSAECONNREFUSED), which Go's ETIMEDOUT /
+	// ECONNREFUSED constants do NOT alias — so we compare the raw errno
+	// numerically to stay OS- and locale-independent.
+	var errno syscall.Errno
+	hasErrno := errors.As(err, &errno)
+
+	var netErr net.Error
+	timedOut := errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded ||
+		(errors.As(err, &netErr) && netErr.Timeout()) ||
+		(hasErrno && uintptr(errno) == 10060) // WSAETIMEDOUT
+	if timedOut {
+		return fmt.Errorf("timed out connecting to %s: host unreachable or not responding (check GOVC_URL, network, and firewall)", host)
+	}
+
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return fmt.Errorf("cannot resolve host %s: DNS lookup failed (check GOVC_URL spelling and DNS): %w", host, err)
+	}
+
+	if errors.Is(err, syscall.ECONNREFUSED) || (hasErrno && uintptr(errno) == 10061) { // WSAECONNREFUSED
+		return fmt.Errorf("connection refused by %s: nothing is listening on that host/port (check GOVC_URL): %w", host, err)
+	}
+
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "certificate") || strings.Contains(msg, "x509") || strings.Contains(msg, "tls"):
+		return fmt.Errorf("TLS verification failed for %s: set GOVC_INSECURE=1 for self-signed certs, or install the CA: %w", host, err)
+	case strings.Contains(msg, "incorrect user name or password") || strings.Contains(msg, "login failure") || strings.Contains(msg, "invalidlogin") || strings.Contains(msg, "cannot complete login") || strings.Contains(msg, "permission to perform this operation"):
+		return fmt.Errorf("authentication failed for %s: check GOVC_USERNAME and GOVC_PASSWORD: %w", host, err)
+	default:
+		return fmt.Errorf("failed to connect to %s: %w", host, err)
+	}
 }
 
 // collectVSphereData traverses the vCenter inventory and builds the raw hardware definitions.
@@ -441,6 +505,9 @@ func isAPIVersionAtLeast(apiVersion, minVersion string) bool {
 // does not yet model them in its Go struct types.
 func getHBAFirmwareViaSoap(ctx context.Context, client *govmomi.Client, hostRef types.ManagedObjectReference) (map[string]struct{ Firmware, Driver string }, error) {
 	result := make(map[string]struct{ Firmware, Driver string })
+
+	ctx, cancel := context.WithTimeout(ctx, soapCallTimeout)
+	defer cancel()
 
 	sc := client.Client.Client // *soap.Client (embedded in vim25.Client)
 	sdkURL := sc.URL()
