@@ -179,6 +179,7 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 	}
 
 	raw := RawHostData{
+		Source:     client.Client.URL().Host,
 		Datacenter: dcName,
 		Cluster:    clsName,
 		Hostname:   hostMo.Name,

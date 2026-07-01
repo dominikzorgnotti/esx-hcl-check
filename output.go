@@ -84,6 +84,9 @@ func saveRawInventory(data []RawHostData, targetPath string) (string, error) {
 
 func printText(data []HostComponents, quiet bool) {
 	for _, hd := range data {
+		if hd.Source != "" {
+			fmt.Printf("vCenter: %s\n", hd.Source)
+		}
 		fmt.Printf("Datacenter: %s\n", hd.Datacenter)
 		clusterName := hd.Cluster
 		if clusterName == "" {

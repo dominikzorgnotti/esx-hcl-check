@@ -31,6 +31,7 @@ type RawDiskDevice struct {
 }
 
 type RawHostData struct {
+	Source      string          `json:"source,omitempty"`
 	Datacenter  string          `json:"datacenter"`
 	Cluster     string          `json:"cluster"`
 	Hostname    string          `json:"hostname"`
@@ -106,6 +107,7 @@ type HCLResult struct {
 }
 
 type HostComponents struct {
+	Source     string          `json:"source,omitempty"`
 	Datacenter string          `json:"datacenter"`
 	Cluster    string          `json:"cluster"`
 	Hostname   string          `json:"hostname"`

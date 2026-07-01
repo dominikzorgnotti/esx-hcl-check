@@ -87,6 +87,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 
 	for _, raw := range rawInventory {
 		hostComp := HostComponents{
+			Source:     raw.Source,
 			Datacenter: raw.Datacenter,
 			Cluster:    raw.Cluster,
 			Hostname:   raw.Hostname,
