@@ -19,6 +19,61 @@ import (
 // the single biggest hang risk in large environments.
 var broadcomHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
+const (
+	// broadcomMaxAttempts bounds retries against the external Broadcom endpoints,
+	// which are occasionally flaky or rate-limited. broadcomBackoffBase is the
+	// first delay; it doubles each retry (500ms, 1s, ...).
+	broadcomMaxAttempts = 3
+	broadcomBackoffBase = 500 * time.Millisecond
+)
+
+// isRetryableStatus reports whether an HTTP status is worth retrying: transient
+// server-side or rate-limit conditions. A 4xx (other than 429) is the endpoint
+// telling us the request itself is wrong, so retrying would not help.
+func isRetryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, // 429
+		http.StatusInternalServerError, // 500
+		http.StatusBadGateway,          // 502
+		http.StatusServiceUnavailable,  // 503
+		http.StatusGatewayTimeout:      // 504
+		return true
+	}
+	return false
+}
+
+// doBroadcomWithRetry issues a request built by newReq through broadcomHTTPClient
+// with bounded exponential backoff, retrying on transport errors and retryable
+// HTTP statuses (429, 5xx). newReq is called fresh for each attempt so a request
+// body is safely replayable. On success — or on a non-retryable status — it
+// returns the response for the caller to inspect and close; if every attempt
+// fails it returns the last error.
+func doBroadcomWithRetry(newReq func() (*http.Request, error)) (*http.Response, error) {
+	var lastErr error
+	for attempt := 1; attempt <= broadcomMaxAttempts; attempt++ {
+		req, err := newReq()
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := broadcomHTTPClient.Do(req)
+		switch {
+		case err != nil:
+			lastErr = err
+		case isRetryableStatus(resp.StatusCode):
+			lastErr = fmt.Errorf("broadcom returned HTTP %d", resp.StatusCode)
+			resp.Body.Close()
+		default:
+			return resp, nil
+		}
+
+		if attempt < broadcomMaxAttempts {
+			time.Sleep(broadcomBackoffBase * time.Duration(1<<(attempt-1)))
+		}
+	}
+	return nil, lastErr
+}
+
 // performHCLChecks processes the raw inventory and maps it to Broadcom search queries.
 func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci bool, vsanHclPath string) []HostComponents {
 
@@ -250,7 +305,9 @@ func loadVsanHCL(path string) (*VsanOfflineDB, error) {
 	}
 
 	if needsDownload {
-		resp, err := broadcomHTTPClient.Get("https://vvs.broadcom.com/service/vsan/all.json")
+		resp, err := doBroadcomWithRetry(func() (*http.Request, error) {
+			return http.NewRequest("GET", "https://vvs.broadcom.com/service/vsan/all.json", nil)
+		})
 		if err == nil && resp.StatusCode == 200 {
 			b, readErr := io.ReadAll(resp.Body)
 			resp.Body.Close()
@@ -512,7 +569,13 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 
 	jsonData, _ := json.Marshal(reqBody)
 	urlStr := "https://compatibilityguide.broadcom.com/compguide/programs/viewResults?limit=20&page=1&sortBy=&sortType=ASC"
-	resp, err := broadcomHTTPClient.Post(urlStr, "application/json", bytes.NewBuffer(jsonData))
+	resp, err := doBroadcomWithRetry(func() (*http.Request, error) {
+		r, e := http.NewRequest("POST", urlStr, bytes.NewReader(jsonData))
+		if e == nil {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		return r, e
+	})
 	if err != nil || resp.StatusCode != 200 {
 		if resp != nil { resp.Body.Close() }
 		return "ERROR"
