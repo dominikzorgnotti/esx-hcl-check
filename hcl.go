@@ -80,7 +80,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 	// Ensure we have an up-to-date offline vSAN database
 	vsanDB, err := loadVsanHCL(vsanHclPath)
 	if err != nil {
-		fmt.Printf("Warning: Failed to load or download vSAN HCL database: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: Failed to load or download vSAN HCL database: %v\n", err)
 	}
 
 	var results []HostComponents

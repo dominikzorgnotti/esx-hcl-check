@@ -31,8 +31,8 @@ func main() {
 	flag.Parse()
 
 	if *esxiRelease == "" {
-		fmt.Println("Error: The -release parameter is mandatory.")
-		fmt.Println("Hint: The input should match the 'Product Release Version' on the Compatibility Guide, e.g. 'ESXi 9.1' or 'ESXi 8.0 U3'")
+		fmt.Fprintln(os.Stderr, "Error: The -release parameter is mandatory.")
+		fmt.Fprintln(os.Stderr, "Hint: The input should match the 'Product Release Version' on the Compatibility Guide, e.g. 'ESXi 9.1' or 'ESXi 8.0 U3'")
 		os.Exit(1)
 	}
 
@@ -65,8 +65,8 @@ func main() {
 	}
 	
 	if !*jsonOutput {
-		fmt.Printf("# Connecting to %s ...\n", client.Client.URL().Host)
-		fmt.Println("# Collecting inventory and hardware data...")
+		fmt.Fprintf(os.Stderr, "# Connecting to %s ...\n", client.Client.URL().Host)
+		fmt.Fprintln(os.Stderr, "# Collecting inventory and hardware data...")
 	}
 
 	rawInventory, err := collectVSphereData(ctx, client, *dcTarget, *clsTarget, *debugPci, *vsanBeta, excludeCfg)
@@ -81,9 +81,8 @@ func main() {
 		log.Fatalf("Failed to save raw inventory JSON: %v", err)
 	}
 
-	// FIXED: Restored the savedPath print statement to clear the unused variable error
 	if !*jsonOutput {
-		fmt.Printf("# Raw inventory saved to: %s\n\n", savedPath)
+		fmt.Fprintf(os.Stderr, "# Raw inventory saved to: %s\n\n", savedPath)
 	}
 
 	if *noHCL {
