@@ -252,9 +252,19 @@ func loadVsanHCL(path string) (*VsanOfflineDB, error) {
 	if needsDownload {
 		resp, err := broadcomHTTPClient.Get("https://vvs.broadcom.com/service/vsan/all.json")
 		if err == nil && resp.StatusCode == 200 {
-			defer resp.Body.Close()
-			b, _ := io.ReadAll(resp.Body)
-			os.WriteFile(path, b, 0644)
+			b, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			// Only cache the download if it is a complete, parseable DB with a
+			// timestamp. This prevents a truncated or corrupt body (e.g. a
+			// mid-transfer drop) from clobbering a previously-good cache.
+			if readErr == nil && len(b) > 0 {
+				var check VsanOfflineDB
+				if json.Unmarshal(b, &check) == nil && check.Timestamp > 0 {
+					_ = writeFileAtomic(path, b, 0644)
+				}
+			}
+		} else if resp != nil {
+			resp.Body.Close()
 		}
 	}
 
