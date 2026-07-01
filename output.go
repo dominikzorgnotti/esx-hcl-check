@@ -5,9 +5,51 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"text/tabwriter"
 )
+
+// writeFileAtomic writes data to path atomically: it writes to a temporary file
+// in the same directory, flushes it, then renames it into place. A crash or
+// truncated write therefore never leaves a partially-written (corrupt) file at
+// path — the reader sees either the old content or the complete new content.
+// The rename is atomic on the same filesystem, and Go's os.Rename replaces an
+// existing destination on both Unix and Windows.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	// Best-effort cleanup if we return before the rename succeeds.
+	defer func() {
+		if tmpName != "" {
+			os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	tmpName = "" // success — keep the renamed file
+	return nil
+}
 
 // saveRawInventory writes the RawHostData array to a JSON file.
 func saveRawInventory(data []RawHostData, targetPath string) (string, error) {
@@ -32,7 +74,9 @@ func saveRawInventory(data []RawHostData, targetPath string) (string, error) {
 		defer f.Close()
 		f.Write(b)
 	} else {
-		os.WriteFile(filePath, b, 0644)
+		if err := writeFileAtomic(filePath, b, 0644); err != nil {
+			return "", fmt.Errorf("failed to write inventory to %s: %w", filePath, err)
+		}
 	}
 
 	return filePath, nil
