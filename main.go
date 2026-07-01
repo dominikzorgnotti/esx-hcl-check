@@ -126,9 +126,9 @@ func applyFilters(data []HostComponents, showUnsupported, showMismatch bool) []H
 		}
 		var keepRes []HCLResult
 		for _, res := range host.Results {
-			if showUnsupported && res.Certified == "FALSE" {
+			if showUnsupported && res.Certified == CertFalse {
 				keepRes = append(keepRes, res)
-			} else if showMismatch && res.Certified == "TRUE" && (res.DriverCertified == "FALSE" || res.FirmwareCertified == "FALSE") {
+			} else if showMismatch && res.Certified == CertTrue && (res.DriverCertified == CertFalse || res.FirmwareCertified == CertFalse) {
 				keepRes = append(keepRes, res)
 			}
 		}
