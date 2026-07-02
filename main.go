@@ -26,6 +26,7 @@ func main() {
 		unsupported = flag.Bool("unsupported", false, "Filter output to ONLY show hardware that is not certified")
 		mismatch    = flag.Bool("mismatch", false, "Filter output to ONLY show hardware that is certified but has a driver/firmware mismatch")
 		quiet       = flag.Bool("quiet", false, "Suppress warnings about missing firmware/driver information")
+		workers     = flag.Int("workers", 8, "Maximum number of hosts to collect from in parallel (use 1 for fully sequential)")
 	)
 	flag.Parse()
 
@@ -69,7 +70,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "# Collecting inventory and hardware data...")
 	}
 
-	rawInventory, err := collectVSphereData(ctx, client, *dcTarget, *clsTarget, *debugPci, *vsanBeta, excludeCfg)
+	rawInventory, err := collectVSphereData(ctx, client, *dcTarget, *clsTarget, *debugPci, *vsanBeta, excludeCfg, *workers)
 	if err != nil {
 		client.Logout(ctx)
 		fmt.Fprintf(os.Stderr, "Error discovering inventory: %v\n", err)
