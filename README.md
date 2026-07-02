@@ -2,9 +2,9 @@
 
 `esx-hcl-check` is a command-line tool designed for vSphere and VMware Cloud Foundation (VCF) administrators. It connects to a vCenter server, extracts the exact hardware inventory of your ESXi hosts, and automatically verifies those components against the Broadcom VMware Compatibility Guide API and the offline vSAN database.
 
-The tool natively handles complex extraction tasks such as parsing binary CPUID instruction sets, identifying PCI bus architectures to distinguish between standard HBAs and NVMe drives, and extracting underlying BIOS, Firmware, and Driver versions directly from the hypervisor. It provides a clear `TRUE` or `FALSE` certification status for System chassis, Processors, I/O devices, and vSAN SSDs.
+The tool natively handles complex extraction tasks such as parsing binary CPUID instruction sets, identifying PCI bus architectures to distinguish between standard HBAs and NVMe drives, and extracting BIOS, firmware, and driver versions directly from the hypervisor — all through the vSphere API, **without ever running `esxcli` on a host**. It reports a per-component verdict (`TRUE`, `FALSE`, `N/A`, `ERROR`, or `SKIPPED`) for the system chassis, processors, I/O devices, and vSAN disks, collects hosts in parallel, and returns a findings-based exit code so it can gate upgrades directly in CI/CD. It can also run fully air-gapped.
 
-## **🚀 Downloads **
+## **🚀 Downloads**
 
 Check out the [releases](https://github.com/dominikzorgnotti/esx-hcl-check/releases) to find the latest binaries for your system.
 
@@ -88,6 +88,7 @@ Once your variables are set, run the tool with the mandatory release parameter:
 | `-stats` | Emits run statistics: inventory counts (datacenters, clusters, hosts, IO cards, storage devices) and query timings (vCenter, Broadcom HCL, vSAN DB). In JSON this adds a top-level `stats` object; in text, a Statistics section. | `false` |
 | `-debugpci` | Bypasses I/O filters and dumps all unknown PCI devices into the raw JSON file for troubleshooting. | `false` |
 | `-nohcl` | Skips the Broadcom HCL validation phase entirely. Useful to just extract the vSphere hardware payload. | `false` |
+| `-vspherejson` | Path to save the raw collected vSphere hardware inventory as JSON. If empty, a file is written to the OS temp directory. | `""` (temp dir) |
 | `-version` | Prints the version, commit, and build date, then exits. | `false` |
 
 ### **💡 Usage Examples**
@@ -222,7 +223,7 @@ You can filter devices using three different methods:
 
 **Example `exclude.json` Payload:**
 
-```bash
+```json
 {  
   "names": [  
     "Lewisburg SATA AHCI Controller",  
