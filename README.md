@@ -31,6 +31,14 @@ go mod tidy
  go build -o esx-hcl-check .
 ```
 
+To stamp a version into the binary (reported by `-version`), pass it via `-ldflags`:
+
+```bash
+ go build -ldflags "-X main.version=v0.4.0 -X main.commit=$(git rev-parse --short HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o esx-hcl-check .
+```
+
+Official release binaries are stamped automatically. A plain `go build` reports version `dev`.
+
 ## **🚀 Basic Usage (Connection Parameters)**
 
 `esx-hcl-check` uses the same environmental connection variables as the standard `govc` CLI tool. You must set these variables in your terminal environment before running the tool.
@@ -80,6 +88,7 @@ Once your variables are set, run the tool with the mandatory release parameter:
 | `-stats` | Emits run statistics: inventory counts (datacenters, clusters, hosts, IO cards, storage devices) and query timings (vCenter, Broadcom HCL, vSAN DB). In JSON this adds a top-level `stats` object; in text, a Statistics section. | `false` |
 | `-debugpci` | Bypasses I/O filters and dumps all unknown PCI devices into the raw JSON file for troubleshooting. | `false` |
 | `-nohcl` | Skips the Broadcom HCL validation phase entirely. Useful to just extract the vSphere hardware payload. | `false` |
+| `-version` | Prints the version, commit, and build date, then exits. | `false` |
 
 ### **💡 Usage Examples**
 

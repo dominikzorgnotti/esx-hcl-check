@@ -10,6 +10,19 @@ import (
 	"time"
 )
 
+// Build metadata, set via -ldflags at build time (see the CI/release workflows).
+// A plain `go build` leaves the defaults, clearly marking a local dev build.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+// versionString formats the build metadata for the -version flag.
+func versionString() string {
+	return fmt.Sprintf("esx-hcl-check %s (commit %s, built %s)", version, commit, date)
+}
+
 // maxWorkers is the hard ceiling for -workers: enough parallelism to speed up
 // large environments without overwhelming vCenter or the Broadcom API.
 const maxWorkers = 8
@@ -46,8 +59,14 @@ func main() {
 		workers     = flag.Int("workers", 4, "How many hosts to collect from at once (1-8). 1 = sequential, one host at a time; higher = that many in parallel")
 		statsFlag   = flag.Bool("stats", false, "Emit run statistics (inventory counts and query timings) as a 'stats' block/key")
 		offline     = flag.Bool("offline", false, "Run without internet: skip all Broadcom Compatibility Guide API checks (marked SKIPPED) and use only the local vSAN HCL database")
+		showVersion = flag.Bool("version", false, "Print version information and exit")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(versionString())
+		return
+	}
 
 	if *esxiRelease == "" {
 		fmt.Fprintln(os.Stderr, "Error: The -release parameter is mandatory.")

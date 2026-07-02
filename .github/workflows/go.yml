@@ -26,7 +26,9 @@ jobs:
         go mod tidy
 
     - name: Build
-      run: go build -v -o esx-hcl-check .
+      run: |
+        LDFLAGS="-X main.version=${{ github.ref_name }} -X main.commit=${GITHUB_SHA::7} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        go build -v -ldflags "${LDFLAGS}" -o esx-hcl-check .
 
     - name: Test
       run: go test -race -v ./...

@@ -41,9 +41,12 @@ jobs:
       run: |
         # Define the output name based on the OS and Architecture
         BINARY_NAME="esx-hcl-check-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
-        
+
+        # Inject version metadata so the binary self-reports via -version
+        LDFLAGS="-X main.version=${{ github.ref_name }} -X main.commit=${GITHUB_SHA::7} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
         # Build the code for the specific matrix target
-        env GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -v -o $BINARY_NAME .
+        env GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -v -ldflags "${LDFLAGS}" -o $BINARY_NAME .
 
     - name: Generate SHA256 Hash
       run: |
