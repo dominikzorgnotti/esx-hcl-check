@@ -209,6 +209,9 @@ func printStatsText(s *Stats) {
 	}
 	fmt.Fprintf(w, "    IO cards:\t%d\n", s.IOCards)
 	fmt.Fprintf(w, "    Storage devices:\t%d\n", s.StorageDevices)
+	if s.SkippedChecks > 0 {
+		fmt.Fprintf(w, "    Skipped checks:\t%d\n", s.SkippedChecks)
+	}
 	fmt.Fprintln(w, "  Runtime:")
 	fmt.Fprintf(w, "    vCenter query:\t%d ms\n", s.VCenterQueryMs)
 	fmt.Fprintf(w, "    Broadcom HCL query:\t%d ms\n", s.BroadcomQueryMs)

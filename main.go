@@ -45,6 +45,7 @@ func main() {
 		quiet       = flag.Bool("quiet", false, "Suppress warnings about missing firmware/driver information")
 		workers     = flag.Int("workers", 4, "How many hosts to collect from at once (1-8). 1 = sequential, one host at a time; higher = that many in parallel")
 		statsFlag   = flag.Bool("stats", false, "Emit run statistics (inventory counts and query timings) as a 'stats' block/key")
+		offline     = flag.Bool("offline", false, "Run without internet: skip all Broadcom Compatibility Guide API checks (marked SKIPPED) and use only the local vSAN HCL database")
 	)
 	flag.Parse()
 
@@ -80,6 +81,29 @@ func main() {
 					}
 				}
 			}
+		}
+	}
+
+	// Connectivity handling — only relevant when the HCL phase will run.
+	if !*noHCL {
+		if *offline {
+			fmt.Fprintln(os.Stderr, "WARNING: -offline is set. Broadcom Compatibility Guide checks are skipped; affected components are marked SKIPPED.")
+			fmt.Fprintln(os.Stderr, "         Verification uses only the local vSAN offline HCL database.")
+			fmt.Fprintf(os.Stderr, "         Ensure it exists at %q (or pass -vsanhcl <path>). If missing, download it from\n", *vsanHclFile)
+			fmt.Fprintf(os.Stderr, "         %s and save it to that path.\n\n", vsanHCLURL)
+		} else if failures := checkConnectivity(5 * time.Second); len(failures) > 0 {
+			fmt.Fprintln(os.Stderr, "Error: cannot reach the online HCL sources required for verification:")
+			for _, f := range failures {
+				fmt.Fprintf(os.Stderr, "  - %s\n", f)
+			}
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "This usually means no internet access, a firewall, or a required proxy. Try one of:")
+			fmt.Fprintln(os.Stderr, "  * Verify this host has internet access to broadcom.com")
+			fmt.Fprintln(os.Stderr, "  * Configure a proxy via the HTTPS_PROXY / HTTP_PROXY / NO_PROXY environment variables")
+			fmt.Fprintln(os.Stderr, "    (a TLS-intercepting proxy may instead surface as a certificate error)")
+			fmt.Fprintln(os.Stderr, "  * Re-run with -offline to skip the Broadcom API and use only the local vSAN HCL database")
+			fmt.Fprintf(os.Stderr, "    (download it from %s and save it to %q, or pass -vsanhcl <path>)\n", vsanHCLURL, *vsanHclFile)
+			os.Exit(2)
 		}
 	}
 
@@ -142,7 +166,7 @@ func main() {
 	// ---------------------------------------------------------
 	// PHASE 2: HCL Verification (API + vSAN DB)
 	// ---------------------------------------------------------
-	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci, *vsanHclFile, &stats)
+	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci, *offline, *vsanHclFile, &stats)
 
 	// Compute the exit code from the complete result set, before -unique/filters
 	// drop entries, so the process status always reflects the true findings.
@@ -171,9 +195,10 @@ func main() {
 //
 //	0 — every component is certified (or not applicable)
 //	1 — at least one component is definitively NOT certified
-//	2 — the scan could not be fully determined: a host/cluster was skipped, or
-//	    an HCL lookup failed (CertError). 2 takes precedence over 1, because an
-//	    incomplete answer should not read as a clean "only known-bad found".
+//	2 — the scan could not be fully determined: a host/cluster was skipped, an
+//	    HCL lookup failed (CertError), or a check was skipped (CertSkipped, e.g.
+//	    -offline). 2 takes precedence over 1, because an incomplete answer should
+//	    not read as a clean "only known-bad found".
 //
 // Fatal run errors (connect/collect/save) also exit 2, handled at their sites.
 func computeExitCode(data []HostComponents) int {
@@ -183,7 +208,7 @@ func computeExitCode(data []HostComponents) int {
 			return 2
 		}
 		for _, res := range host.Results {
-			if res.Certified == CertError {
+			if res.Certified == CertError || res.Certified == CertSkipped {
 				return 2
 			}
 			if res.Certified == CertFalse {

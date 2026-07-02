@@ -71,11 +71,53 @@ func (c *queryCache) getWith(query func(string, []map[string]interface{}, []stri
 	return v
 }
 
+// Broadcom HCL source endpoints, centralized so the preflight check, the
+// downloader, and the user-facing messages all reference the same URLs.
+const (
+	vsanHCLURL           = "https://vvs.broadcom.com/service/vsan/all.json"
+	broadcomGuideBaseURL = "https://compatibilityguide.broadcom.com"
+)
+
 // broadcomHTTPClient bounds all outbound Broadcom HCL calls (vSAN DB download and
 // the compatibility-guide API) so a slow or hung endpoint cannot stall the scan
 // indefinitely. Runs are sequential and per-device, so a missing timeout here is
 // the single biggest hang risk in large environments.
 var broadcomHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
+type hclEndpoint struct{ name, url string }
+
+// hclEndpoints are the online sources the preflight probes.
+var hclEndpoints = []hclEndpoint{
+	{"Broadcom Compatibility Guide", broadcomGuideBaseURL},
+	{"vSAN offline HCL database", vsanHCLURL},
+}
+
+// checkConnectivity probes the online HCL sources and returns a human-readable
+// failure line for each one that is unreachable (empty slice = all reachable).
+func checkConnectivity(timeout time.Duration) []string {
+	return checkEndpoints(&http.Client{Timeout: timeout}, hclEndpoints)
+}
+
+// checkEndpoints is the testable core of checkConnectivity. A transport error
+// (DNS, timeout, refused, proxy failure) means unreachable; any HTTP response —
+// even 4xx/5xx — means the host is reachable, which is all the preflight needs.
+func checkEndpoints(client *http.Client, endpoints []hclEndpoint) []string {
+	var failures []string
+	for _, ep := range endpoints {
+		req, err := http.NewRequest("HEAD", ep.url, nil)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s (%s): %v", ep.name, ep.url, err))
+			continue
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s (%s): %v", ep.name, ep.url, err))
+			continue
+		}
+		resp.Body.Close()
+	}
+	return failures
+}
 
 const (
 	// broadcomMaxAttempts bounds retries against the external Broadcom endpoints,
@@ -133,13 +175,16 @@ func doBroadcomWithRetry(newReq func() (*http.Request, error)) (*http.Response, 
 }
 
 // performHCLChecks processes the raw inventory and maps it to Broadcom search queries.
-// If stats is non-nil, it records the vSAN DB load time and the total live
-// Broadcom query time.
-func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci bool, vsanHclPath string, stats *Stats) []HostComponents {
+// When offline is true, no live Broadcom API calls are made: components that can
+// only be verified via the API are marked CertSkipped, while components found in
+// the local vSAN offline DB still get a real verdict. If stats is non-nil, it
+// records the vSAN DB load time, the total live Broadcom query time, and the
+// number of skipped checks.
+func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci, offline bool, vsanHclPath string, stats *Stats) []HostComponents {
 
 	// Ensure we have an up-to-date offline vSAN database
 	vsanStart := time.Now()
-	vsanDB, err := loadVsanHCL(vsanHclPath)
+	vsanDB, err := loadVsanHCL(vsanHclPath, offline)
 	if stats != nil {
 		stats.VsanDBQueryMs = time.Since(vsanStart).Milliseconds()
 	}
@@ -169,29 +214,33 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 			continue
 		}
 
-		// 1. System Chassis
+		// 1. System Chassis (API-only: no local DB, so offline -> SKIPPED)
 		sysFullModel := fmt.Sprintf("%s %s", raw.SysVendor, raw.SysModel)
-		sysFilters := []map[string]interface{}{{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}}}
-		sysCertified := qc.get("server", sysFilters, []string{raw.SysModel}, releaseVersion)
-
 		sysRes := buildSystemQuery(sysFullModel, raw.SysModel, releaseVersion)
-		sysRes.Certified = sysCertified
 		sysRes.Firmware = raw.BiosVersion
 		sysRes.DriverCertified = CertNA
 		sysRes.FirmwareCertified = CertNA
+		if offline {
+			sysRes.Certified = CertSkipped
+		} else {
+			sysFilters := []map[string]interface{}{{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}}}
+			sysRes.Certified = qc.get("server", sysFilters, []string{raw.SysModel}, releaseVersion)
+		}
 		hostComp.Results = append(hostComp.Results, sysRes)
 
-		// 2. CPU
-		cpuKeyword := raw.CpuModel
-		if raw.CpuId != "" { cpuKeyword = raw.CpuId }
-		cpuFilters := []map[string]interface{}{{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}}}
-		cpuCertified := qc.get("cpu", cpuFilters, []string{cpuKeyword}, releaseVersion)
-
+		// 2. CPU (API-only: no local DB, so offline -> SKIPPED)
 		cpuRes := buildCPUQuery(raw.CpuModel, raw.CpuId, releaseVersion)
 		if details && raw.CpuId != "" { cpuRes.CPUID = raw.CpuId }
-		cpuRes.Certified = cpuCertified
 		cpuRes.DriverCertified = CertNA
 		cpuRes.FirmwareCertified = CertNA
+		if offline {
+			cpuRes.Certified = CertSkipped
+		} else {
+			cpuKeyword := raw.CpuModel
+			if raw.CpuId != "" { cpuKeyword = raw.CpuId }
+			cpuFilters := []map[string]interface{}{{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}}}
+			cpuRes.Certified = qc.get("cpu", cpuFilters, []string{cpuKeyword}, releaseVersion)
+		}
 		hostComp.Results = append(hostComp.Results, cpuRes)
 
 		// 3. PCI Devices
@@ -252,16 +301,20 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 						foundInVsan = evaluateVsanPCI(vsanDB, vidHex, didHex, svidHex, ssidHex, releaseVersion, &res)
 					}
 
-					// Fallback to Broadcom API if not found in vSAN DB
+					// Fallback to Broadcom API if not found in vSAN DB (skipped offline)
 					if !foundInVsan {
-						filters := []map[string]interface{}{
-							{"displayKey": "vid", "filterValues": []string{vidHex}},
-							{"displayKey": "did", "filterValues": []string{didHex}},
-							{"displayKey": "svid", "filterValues": []string{svidHex}},
-							{"displayKey": "ssid", "filterValues": []string{ssidHex}},
-						}
-						res.Certified = qc.get("io", filters, []string{}, releaseVersion)
 						res.HCLLink = buildHexQueryURL(releaseVersion, int16(pci.VID), int16(pci.DID), int16(pci.SVID), int16(pci.SSID))
+						if offline {
+							res.Certified = CertSkipped
+						} else {
+							filters := []map[string]interface{}{
+								{"displayKey": "vid", "filterValues": []string{vidHex}},
+								{"displayKey": "did", "filterValues": []string{didHex}},
+								{"displayKey": "svid", "filterValues": []string{svidHex}},
+								{"displayKey": "ssid", "filterValues": []string{ssidHex}},
+							}
+							res.Certified = qc.get("io", filters, []string{}, releaseVersion)
+						}
 					}
 				}
 
@@ -331,19 +384,24 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					} else {
 						res.HCLLink = buildDiskQueryURL(disk.Vendor, disk.Model, releaseVersion)
 					}
-					filters := []map[string]interface{}{}
-					cleanVen := strings.TrimSpace(disk.Vendor)
 
-					// Do not pass generic "NVMe" to the Broadcom API to prevent HTTP 400 Bad Request errors.
-					// Short/ambiguous vendor names (e.g. "HP") can also trigger 400; we retry without them below.
-					if cleanVen != "" && !strings.EqualFold(cleanVen, "NVMe") {
-						filters = append(filters, map[string]interface{}{"displayKey": "partnerName", "filterValues": []string{cleanVen}})
-					}
-					res.Certified = qc.get("vsan", filters, []string{disk.Model}, releaseVersion)
+					if offline {
+						res.Certified = CertSkipped
+					} else {
+						filters := []map[string]interface{}{}
+						cleanVen := strings.TrimSpace(disk.Vendor)
 
-					// Retry without the partner filter if the API rejected the request
-					if res.Certified == CertError && len(filters) > 0 {
-						res.Certified = qc.get("vsan", nil, []string{disk.Model}, releaseVersion)
+						// Do not pass generic "NVMe" to the Broadcom API to prevent HTTP 400 Bad Request errors.
+						// Short/ambiguous vendor names (e.g. "HP") can also trigger 400; we retry without them below.
+						if cleanVen != "" && !strings.EqualFold(cleanVen, "NVMe") {
+							filters = append(filters, map[string]interface{}{"displayKey": "partnerName", "filterValues": []string{cleanVen}})
+						}
+						res.Certified = qc.get("vsan", filters, []string{disk.Model}, releaseVersion)
+
+						// Retry without the partner filter if the API rejected the request
+						if res.Certified == CertError && len(filters) > 0 {
+							res.Certified = qc.get("vsan", nil, []string{disk.Model}, releaseVersion)
+						}
 					}
 				}
 
@@ -357,6 +415,13 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 
 	if stats != nil {
 		stats.BroadcomQueryMs = qc.liveTime.Milliseconds()
+		for _, host := range results {
+			for _, res := range host.Results {
+				if res.Certified == CertSkipped {
+					stats.SkippedChecks++
+				}
+			}
+		}
 	}
 	return results
 }
@@ -365,7 +430,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 // vSAN Offline DB Engine
 // -------------------------------------------------------------
 
-func loadVsanHCL(path string) (*VsanOfflineDB, error) {
+func loadVsanHCL(path string, offline bool) (*VsanOfflineDB, error) {
 	needsDownload := false
 
 	_, err := os.Stat(path)
@@ -385,9 +450,19 @@ func loadVsanHCL(path string) (*VsanOfflineDB, error) {
 		}
 	}
 
-	if needsDownload {
+	if needsDownload && offline {
+		// Cannot refresh in offline mode. If a (possibly stale) copy exists we
+		// use it below; if none exists, guide the user to fetch it by hand.
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("vSAN HCL database not found at %q and -offline prevents downloading it.\n"+
+				"  Download it manually from %s and save it to that path, or pass -vsanhcl <path>", path, vsanHCLURL)
+		}
+		fmt.Fprintf(os.Stderr, "Warning: vSAN HCL database at %q may be stale; -offline prevents refreshing it.\n", path)
+	}
+
+	if needsDownload && !offline {
 		resp, err := doBroadcomWithRetry(func() (*http.Request, error) {
-			return http.NewRequest("GET", "https://vvs.broadcom.com/service/vsan/all.json", nil)
+			return http.NewRequest("GET", vsanHCLURL, nil)
 		})
 		if err == nil && resp.StatusCode == 200 {
 			b, readErr := io.ReadAll(resp.Body)

@@ -69,6 +69,7 @@ Once your variables are set, run the tool with the mandatory release parameter:
 | `-unique` | Aggregates and deduplicates all hardware findings globally across all scanned hosts. | `false` |
 | `-exclude` | Path to the JSON file containing rules to drop specific devices from the scan. | `exclude.json` |
 | `-vsanhcl` | Path to the local vSAN HCL offline JSON database. Automatically downloaded if missing or outdated. | `vsan-offline-hcl.json` |
+| `-offline` | Run without internet access. Skips all Broadcom Compatibility Guide API checks (affected components are marked `SKIPPED`) and verifies only against the local vSAN HCL database. See [Offline / Air-Gapped Operation](#-offline--air-gapped-operation). | `false` |
 | `-unsupported` | Filters the output to ONLY show hardware components that are NOT certified. | `false` |
 | `-mismatch` | Filters the output to ONLY show certified hardware that has an unsupported Firmware or Driver installed. | `false` |
 | `-json` | Outputs the final HCL evaluation results as a JSON payload instead of a text table. | `false` |
@@ -100,6 +101,24 @@ Once your variables are set, run the tool with the mandatory release parameter:
 ./esx-hcl-check -release="ESXi 9.1" -unique -json -details -vsan
 ```
 
+## **🔌 Offline / Air-Gapped Operation**
+
+`esx-hcl-check` relies on two Broadcom internet endpoints — the Compatibility Guide API and the vSAN offline HCL database. Before the HCL phase runs, the tool **probes both** (unless `-nohcl` or `-offline` is set). If either is unreachable, it aborts early with a clear message naming the failed endpoint(s) and three ways forward:
+
+* Verify the host has internet access to `broadcom.com`
+* Configure a proxy via the `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` environment variables (these are honored automatically; note that a **TLS-intercepting** proxy typically surfaces as a *certificate* error instead)
+* Re-run with `-offline`
+
+### **`-offline` mode**
+
+`-offline` runs a **partial** verification without any internet access:
+
+* All Broadcom Compatibility Guide API checks are skipped. Components that can only be verified via that API — the system chassis, the CPU, and any I/O device not found locally — are reported as **`SKIPPED`**.
+* I/O controllers, NICs, and vSAN SSDs that **are** present in the local vSAN offline HCL database still receive a real `TRUE`/`FALSE` verdict.
+* The vSAN database is **not** auto-downloaded. Place it on disk beforehand at the default path (`vsan-offline-hcl.json`) or point to it with `-vsanhcl <path>`. If it is missing, the tool tells you to download it from `https://vvs.broadcom.com/service/vsan/all.json`.
+
+Because an offline run cannot fully determine certification, it exits with code `2` (see below).
+
 ## **🚦 Exit Codes**
 
 The process exit code reflects the scan findings, so `esx-hcl-check` can be used directly as a pre-upgrade gate in CI/CD without parsing its output:
@@ -108,7 +127,7 @@ The process exit code reflects the scan findings, so `esx-hcl-check` can be used
 | ----- | ----- |
 | `0` | Every scanned component is certified (or not applicable). |
 | `1` | At least one component is definitively **not** certified. |
-| `2` | The result could not be fully determined — a host or cluster was skipped (disconnected, in maintenance, or a permissions/API error), an HCL lookup failed, or a fatal run error occurred (connection, inventory, or file write). A `2` takes precedence over a `1`. |
+| `2` | The result could not be fully determined — a host or cluster was skipped (disconnected, in maintenance, or a permissions/API error), an HCL lookup failed, a check was skipped (`SKIPPED`, e.g. under `-offline`), or a fatal run error occurred (connection, inventory, or file write). A `2` takes precedence over a `1`. |
 
 ## **🔀 Output Streams**
 
