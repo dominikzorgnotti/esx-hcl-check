@@ -656,7 +656,29 @@ func aggregateUnique(data []HostComponents) []HostComponents {
 		}
 	}
 
-	return []HostComponents{{Datacenter: "Global", Cluster: "(Aggregated Deduplication)", Hostname: "All Scanned Hosts", Results: aggregatedResults, Issues: aggregatedIssues}}
+	// Preserve the source (vCenter) in the aggregated record for consistency with
+	// per-host output. Collect the distinct sources so a multi-vCenter run lists
+	// all of them, sorted for deterministic output.
+	sourceSet := make(map[string]bool)
+	for _, host := range data {
+		if host.Source != "" {
+			sourceSet[host.Source] = true
+		}
+	}
+	sources := make([]string, 0, len(sourceSet))
+	for s := range sourceSet {
+		sources = append(sources, s)
+	}
+	sort.Strings(sources)
+
+	return []HostComponents{{
+		Source:     strings.Join(sources, ", "),
+		Datacenter: "Global",
+		Cluster:    "(Aggregated Deduplication)",
+		Hostname:   "All Scanned Hosts",
+		Results:    aggregatedResults,
+		Issues:     aggregatedIssues,
+	}}
 }
 
 func buildHexQueryURL(releaseVersion string, vid, did, svid, ssid int16) string {
