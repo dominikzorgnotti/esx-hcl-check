@@ -42,7 +42,7 @@ func main() {
 		unsupported = flag.Bool("unsupported", false, "Filter output to ONLY show hardware that is not certified")
 		mismatch    = flag.Bool("mismatch", false, "Filter output to ONLY show hardware that is certified but has a driver/firmware mismatch")
 		quiet       = flag.Bool("quiet", false, "Suppress warnings about missing firmware/driver information")
-		workers     = flag.Int("workers", 4, "Number of hosts to collect from in parallel; valid range 1-8 (use 1 for fully sequential)")
+		workers     = flag.Int("workers", 4, "How many hosts to collect from at once (1-8). 1 = sequential, one host at a time; higher = that many in parallel")
 	)
 	flag.Parse()
 

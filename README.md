@@ -75,7 +75,7 @@ Once your variables are set, run the tool with the mandatory release parameter:
 | `-details` | Includes raw hardware identifiers (VID, DID, SVID, SSID) and supported firmware/driver arrays in the JSON. *Auto-enables -json*. | `false` |
 | `-vsan` | Extracts vSAN SSDs and NVMe drives and checks them against the vSAN HCL database. | `false` |
 | `-quiet` | Suppresses the Issues section that lists devices for which firmware/driver information could not be retrieved. | `false` |
-| `-workers` | Number of hosts to collect from in parallel. Valid range is `1`–`8` (hard maximum `8`); values above `8` are capped, and values below `1` are rejected. Use `1` to force fully sequential collection in constrained or rate-sensitive environments. | `4` |
+| `-workers` | How many hosts to collect from at once. **`1` runs fully sequentially** (one host at a time); higher values collect that many hosts in parallel. Valid range is `1`–`8` (hard maximum `8`): values above `8` are capped, and values below `1` are rejected. Use `1` in constrained or rate-sensitive environments. | `4` |
 | `-debugpci` | Bypasses I/O filters and dumps all unknown PCI devices into the raw JSON file for troubleshooting. | `false` |
 | `-nohcl` | Skips the Broadcom HCL validation phase entirely. Useful to just extract the vSphere hardware payload. | `false` |
 

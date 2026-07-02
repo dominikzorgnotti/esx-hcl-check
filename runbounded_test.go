@@ -42,6 +42,28 @@ func TestRunBoundedRespectsLimit(t *testing.T) {
 	}
 }
 
+// TestRunBoundedOneIsSequential locks the user-facing guarantee that -workers=1
+// processes one host at a time (never two concurrently).
+func TestRunBoundedOneIsSequential(t *testing.T) {
+	var inFlight, maxInFlight int32
+	runBounded(100, 1, func(i int) {
+		cur := atomic.AddInt32(&inFlight, 1)
+		for {
+			old := atomic.LoadInt32(&maxInFlight)
+			if cur <= old || atomic.CompareAndSwapInt32(&maxInFlight, old, cur) {
+				break
+			}
+		}
+		for j := 0; j < 1000; j++ {
+			_ = j
+		}
+		atomic.AddInt32(&inFlight, -1)
+	})
+	if maxInFlight != 1 {
+		t.Fatalf("workers=1 ran %d concurrently, want strictly 1 (sequential)", maxInFlight)
+	}
+}
+
 func TestRunBoundedZeroWorkersIsSequential(t *testing.T) {
 	got := make([]int, 10)
 	runBounded(10, 0, func(i int) { got[i] = i + 1 }) // 0 -> treated as 1
