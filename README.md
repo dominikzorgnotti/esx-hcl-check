@@ -111,6 +111,17 @@ Once your variables are set, run the tool with the mandatory release parameter:
 ./esx-hcl-check -release="ESXi 9.1" -unique -json -details -vsan
 ```
 
+**4. Gate an upgrade in CI/CD (the exit code drives the pipeline):**
+
+```bash
+./esx-hcl-check -release="ESXi 9.1" -unique -json > report.json
+case $? in
+  0) echo "All certified — proceed with the upgrade." ;;
+  1) echo "Uncertified hardware found — block." ; exit 1 ;;
+  2) echo "Result undetermined (skipped host, lookup error, or -offline) — needs review." ; exit 1 ;;
+esac
+```
+
 ## **🔌 Offline / Air-Gapped Operation**
 
 `esx-hcl-check` relies on two Broadcom internet endpoints — the Compatibility Guide API and the vSAN offline HCL database. Before the HCL phase runs, the tool **probes both** (unless `-nohcl` or `-offline` is set). If either is unreachable, it aborts early with a clear message naming the failed endpoint(s) and three ways forward:
