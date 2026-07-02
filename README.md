@@ -76,6 +76,7 @@ Once your variables are set, run the tool with the mandatory release parameter:
 | `-vsan` | Extracts vSAN SSDs and NVMe drives and checks them against the vSAN HCL database. | `false` |
 | `-quiet` | Suppresses the Issues section that lists devices for which firmware/driver information could not be retrieved. | `false` |
 | `-workers` | How many hosts to collect from at once. **`1` runs fully sequentially** (one host at a time); higher values collect that many hosts in parallel. Valid range is `1`–`8` (hard maximum `8`): values above `8` are capped, and values below `1` are rejected. Use `1` in constrained or rate-sensitive environments. | `4` |
+| `-stats` | Emits run statistics: inventory counts (datacenters, clusters, hosts, IO cards, storage devices) and query timings (vCenter, Broadcom HCL, vSAN DB). In JSON this adds a top-level `stats` object; in text, a Statistics section. | `false` |
 | `-debugpci` | Bypasses I/O filters and dumps all unknown PCI devices into the raw JSON file for troubleshooting. | `false` |
 | `-nohcl` | Skips the Broadcom HCL validation phase entirely. Useful to just extract the vSphere hardware payload. | `false` |
 
@@ -112,6 +113,31 @@ The process exit code reflects the scan findings, so `esx-hcl-check` can be used
 ## **🔀 Output Streams**
 
 Only report data is written to **stdout** — the text table, or the JSON payload with `-json`. All diagnostics (progress messages, warnings, and errors) go to **stderr**. This means you can safely pipe or redirect the report (`> report.json`) without diagnostics contaminating it.
+
+## **📊 Run Statistics (`-stats`)**
+
+Pass `-stats` to measure a run. It reports how much inventory was collected and how long each external dependency took — useful for sizing large environments and for seeing the effect of `-workers`.
+
+With `-json`, a `stats` object is added at the top level, alongside `results` and `issues`:
+
+```json
+{
+  "results": [ ... ],
+  "issues":  [ ... ],
+  "stats": {
+    "datacenters": 1,
+    "clusters": 4,
+    "hosts": 15,
+    "io_cards": 100,
+    "storage_devices": 30,
+    "vcenter_query_ms": 1234,
+    "broadcom_hcl_query_ms": 5678,
+    "vsan_db_query_ms": 234
+  }
+}
+```
+
+Without `-json`, the same figures are printed as a **Statistics** section (Inventory + Runtime). The `broadcom_hcl_query_ms` timing counts only live calls, so with cross-host de-duplication it reflects the true network cost rather than the number of devices.
 
 ## **⏭️ Skipped Hosts**
 

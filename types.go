@@ -159,6 +159,23 @@ type HCLResult struct {
 	CPUID string `json:"cpu_id,omitempty"`
 }
 
+// Stats holds optional run statistics emitted when -stats is set: how much
+// inventory was collected and how long the external queries took.
+type Stats struct {
+	// Inventory counts (from the collected raw inventory)
+	Datacenters    int `json:"datacenters"`
+	Clusters       int `json:"clusters"`
+	Hosts          int `json:"hosts"`
+	HostsSkipped   int `json:"hosts_skipped,omitempty"`
+	IOCards        int `json:"io_cards"`
+	StorageDevices int `json:"storage_devices"`
+
+	// Runtime timings (milliseconds)
+	VCenterQueryMs  int64 `json:"vcenter_query_ms"`
+	BroadcomQueryMs int64 `json:"broadcom_hcl_query_ms"`
+	VsanDBQueryMs   int64 `json:"vsan_db_query_ms"`
+}
+
 type HostComponents struct {
 	Source     string          `json:"source,omitempty"`
 	Datacenter string          `json:"datacenter"`

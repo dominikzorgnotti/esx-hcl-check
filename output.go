@@ -7,8 +7,40 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"text/tabwriter"
 )
+
+// computeInventoryStats tallies the collected raw inventory: how many
+// datacenters, clusters, hosts, IO cards, and storage devices were seen. It
+// fills the count fields of a Stats; timing fields are set elsewhere.
+func computeInventoryStats(inv []RawHostData) Stats {
+	var s Stats
+	dcSet := make(map[string]bool)
+	clSet := make(map[string]bool)
+	for _, h := range inv {
+		if h.Datacenter != "" {
+			dcSet[h.Datacenter] = true
+		}
+		if h.Cluster != "" {
+			clSet[h.Cluster] = true
+		}
+		if h.SkipReason != "" {
+			s.HostsSkipped++
+			continue
+		}
+		s.Hosts++
+		for _, pci := range h.PCIDevices {
+			if strings.HasPrefix(pci.DeviceType, "io card") {
+				s.IOCards++
+			}
+		}
+		s.StorageDevices += len(h.Disks)
+	}
+	s.Datacenters = len(dcSet)
+	s.Clusters = len(clSet)
+	return s
+}
 
 // writeFileAtomic writes data to path atomically: it writes to a temporary file
 // in the same directory, flushes it, then renames it into place. A crash or
@@ -82,7 +114,7 @@ func saveRawInventory(data []RawHostData, targetPath string) (string, error) {
 	return filePath, nil
 }
 
-func printText(data []HostComponents, quiet bool) {
+func printText(data []HostComponents, stats *Stats, quiet bool) {
 	for _, hd := range data {
 		if hd.Source != "" {
 			fmt.Printf("vCenter: %s\n", hd.Source)
@@ -157,9 +189,39 @@ func printText(data []HostComponents, quiet bool) {
 		}
 		fmt.Println()
 	}
+
+	if stats != nil {
+		printStatsText(stats)
+	}
 }
 
-func printJSON(data []HostComponents, quiet bool) {
+// printStatsText renders the -stats section: inventory counts and runtime
+// timings, aligned in two columns.
+func printStatsText(s *Stats) {
+	fmt.Println("Statistics:")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "  Inventory:")
+	fmt.Fprintf(w, "    Datacenters:\t%d\n", s.Datacenters)
+	fmt.Fprintf(w, "    Clusters:\t%d\n", s.Clusters)
+	fmt.Fprintf(w, "    Hosts:\t%d\n", s.Hosts)
+	if s.HostsSkipped > 0 {
+		fmt.Fprintf(w, "    Hosts skipped:\t%d\n", s.HostsSkipped)
+	}
+	fmt.Fprintf(w, "    IO cards:\t%d\n", s.IOCards)
+	fmt.Fprintf(w, "    Storage devices:\t%d\n", s.StorageDevices)
+	fmt.Fprintln(w, "  Runtime:")
+	fmt.Fprintf(w, "    vCenter query:\t%d ms\n", s.VCenterQueryMs)
+	fmt.Fprintf(w, "    Broadcom HCL query:\t%d ms\n", s.BroadcomQueryMs)
+	fmt.Fprintf(w, "    vSAN DB query:\t%d ms\n", s.VsanDBQueryMs)
+	w.Flush()
+	fmt.Println()
+}
+
+// buildJSONOutput assembles the top-level -json payload: results, issues, and
+// (when -stats is set) stats. Extracted from printJSON so the wire shape is
+// unit-testable. Note: it clears per-host Issues (they are aggregated to the
+// top level), mutating data in place, so call it once at output time.
+func buildJSONOutput(data []HostComponents, stats *Stats, quiet bool) any {
 	var allIssues []MissingDetail
 	for i := range data {
 		if !quiet {
@@ -168,18 +230,22 @@ func printJSON(data []HostComponents, quiet bool) {
 		data[i].Issues = nil
 	}
 
-	out := struct {
+	return struct {
 		Results []HostComponents `json:"results"`
 		Issues  []MissingDetail  `json:"issues,omitempty"`
+		Stats   *Stats           `json:"stats,omitempty"`
 	}{
 		Results: data,
 		Issues:  allIssues,
+		Stats:   stats,
 	}
+}
 
+func printJSON(data []HostComponents, stats *Stats, quiet bool) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(out); err != nil {
+	if err := enc.Encode(buildJSONOutput(data, stats, quiet)); err != nil {
 		fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
 	}
 }
