@@ -2,9 +2,9 @@
 
 `esx-hcl-check` is a command-line tool designed for vSphere and VMware Cloud Foundation (VCF) administrators. It connects to a vCenter server, extracts the exact hardware inventory of your ESXi hosts, and automatically verifies those components against the Broadcom VMware Compatibility Guide API and the offline vSAN database.
 
-The tool natively handles complex extraction tasks such as parsing binary CPUID instruction sets, identifying PCI bus architectures to distinguish between standard HBAs and NVMe drives, and extracting underlying BIOS, Firmware, and Driver versions directly from the hypervisor. It provides a clear `TRUE` or `FALSE` certification status for System chassis, Processors, I/O devices, and vSAN SSDs.
+The tool natively handles complex extraction tasks such as parsing binary CPUID instruction sets, identifying PCI bus architectures to distinguish between standard HBAs and NVMe drives, and extracting BIOS, firmware, and driver versions directly from the hypervisor — all through the vSphere API, **without ever running `esxcli` on a host**. It reports a per-component verdict (`TRUE`, `FALSE`, `N/A`, `ERROR`, or `SKIPPED`) for the system chassis, processors, I/O devices, and vSAN disks, collects hosts in parallel, and returns a findings-based exit code so it can gate upgrades directly in CI/CD. It can also run fully air-gapped.
 
-## **🚀 Downloads **
+## **🚀 Downloads**
 
 Check out the [releases](https://github.com/dominikzorgnotti/esx-hcl-check/releases) to find the latest binaries for your system.
 
@@ -88,6 +88,7 @@ Once your variables are set, run the tool with the mandatory release parameter:
 | `-stats` | Emits run statistics: inventory counts (datacenters, clusters, hosts, IO cards, storage devices) and query timings (vCenter, Broadcom HCL, vSAN DB). In JSON this adds a top-level `stats` object; in text, a Statistics section. | `false` |
 | `-debugpci` | Bypasses I/O filters and dumps all unknown PCI devices into the raw JSON file for troubleshooting. | `false` |
 | `-nohcl` | Skips the Broadcom HCL validation phase entirely. Useful to just extract the vSphere hardware payload. | `false` |
+| `-vspherejson` | Path to save the raw collected vSphere hardware inventory as JSON. If empty, a file is written to the OS temp directory. | `""` (temp dir) |
 | `-version` | Prints the version, commit, and build date, then exits. | `false` |
 
 ### **💡 Usage Examples**
@@ -108,6 +109,17 @@ Once your variables are set, run the tool with the mandatory release parameter:
 
 ```
 ./esx-hcl-check -release="ESXi 9.1" -unique -json -details -vsan
+```
+
+**4. Gate an upgrade in CI/CD (the exit code drives the pipeline):**
+
+```bash
+./esx-hcl-check -release="ESXi 9.1" -unique -json > report.json
+case $? in
+  0) echo "All certified — proceed with the upgrade." ;;
+  1) echo "Uncertified hardware found — block." ; exit 1 ;;
+  2) echo "Result undetermined (skipped host, lookup error, or -offline) — needs review." ; exit 1 ;;
+esac
 ```
 
 ## **🔌 Offline / Air-Gapped Operation**
@@ -171,25 +183,44 @@ Without `-json`, the same figures are printed as a **Statistics** section (Inven
 
 Hosts that cannot be scanned are no longer silently dropped. Each appears in the output with a `skip_reason` (e.g. `host not connected (state: disconnected)`, `property-collector-error: ...`, or `could not enumerate hosts: ...`), and the JSON also carries a `source` field identifying the originating vCenter.
 
-## **🧠 Architecture: vSAN Offline DB & Firmware Limitations**
+## **🧠 Architecture: How Verification Works**
 
-Because Broadcom's live REST API does not easily expose deep firmware and driver matrices for unauthenticated queries, this tool relies on a hybrid approach for maximum accuracy:
+`esx-hcl-check` runs in three phases: it **collects** a hardware inventory from vCenter, **verifies** each component against Broadcom's HCL data, then **reports** the result. A deliberate design constraint shapes the whole tool:
 
-### **The vSAN Offline Database (`vsan-offline-hcl.json`)**
+> **It never runs `esxcli` or any command on the hosts.** Everything is read through the vSphere API (govmomi) using your existing vCenter credentials. This keeps the tool safe to run against production and requires no host-level access — at the cost of a few extraction limits noted below.
 
-To reliably validate I/O controllers, NICs, and vSAN SSDs, the tool automatically downloads Broadcom's comprehensive vSAN Offline JSON Database. It caches this file locally (updating it automatically if it is older than 24 hours).
+### **Phase 1 — Inventory collection (vSphere API only)**
 
-During the HCL verification phase, the tool first searches this offline database using exact hex identifiers (VID, DID, SVID, SSID) or Disk model/vendor combinations. If a match is found, the tool can definitively cross-reference the exact driver and firmware installed on your host against the arrays of certified versions listed in the database. This allows for the precise `-mismatch` filtering feature.
+Hosts are queried in parallel (bounded by `-workers`) via the vCenter property collector. For each host the tool extracts the system make/model and BIOS, decodes the processor's **CPUID** from the raw CPU feature bits, and enumerates every PCI device — classifying it as a NIC, Fibre Channel / RAID controller, GPU, or NVMe device — plus vSAN SSD/NVMe disks (`-vsan`).
 
-### **Live API Fallback & Storage Device Limitations**
+Where it gets firmware and driver versions **without `esxcli`**:
 
-If a component (such as a generic storage HBA or an older disk) is not found in the vSAN Offline DB, the tool seamlessly falls back to querying the live Broadcom Compatibility Guide API.
+* **NICs** — firmware, driver, and driver version come directly from the physical-NIC properties.
+* **NVMe controllers** — firmware from the NVMe topology; driver name from the PCIe HBA; driver version from vSphere **9.1+** (see below).
+* **Fibre Channel / RAID HBAs** — these fields are **not** modeled by the vSphere API on releases before **9.1**. On vSphere 9.1 and later the tool retrieves them through a targeted SOAP call. On older releases they are unavailable, and the affected devices are listed in the **Issues** section with the reason — rather than guessing or shelling out to `esxcli`.
+* **NVMe vendor tokenization** — vSphere often reports the vendor of a direct-attached NVMe drive generically as "NVMe" and folds the real vendor (Dell, Samsung, …) into the model string. The tool tokenizes the model to recover it for matching.
 
-**Important Limitations:**
+### **Phase 2 — Two-source HCL verification**
 
-* **Firmware Extraction:** The standard vSphere hypervisor API (which this tool uses) does not natively expose the firmware versions for standard PCI HBAs and NICs without executing privileged `esxcli` commands.  
-* **NVMe Vendors:** vSphere often translates the vendor of directly-attached NVMe drives generically as "NVMe", moving the true vendor (e.g., Dell, Samsung) into the model string. The tool automatically tokenizes these strings to perform intelligent matching.  
-* **API Limitations:** When falling back to the live Broadcom API, the tool can verify if the hardware baseline is certified (`TRUE/FALSE`), but cannot definitively certify the exact Firmware/Driver combination. In these cases, the `drv certified` and `fw certified` columns will gracefully report `N/A`.
+Broadcom does not expose deep firmware/driver matrices through its live API for unauthenticated queries, so the tool uses two data sources and prefers the richer one:
+
+1. **The vSAN Offline Database (local, authoritative for firmware/driver).** Each component is first matched here — by exact hex identifiers (VID, DID, SVID, SSID) for controllers/NICs/NVMe, or by vendor + model tokens for disks. A match yields not just a certified baseline but the **arrays of certified driver and firmware versions**, which the tool cross-references against what is actually installed. This is what powers the `driver_certified` / `firmware_certified` columns, the `supported_drivers` / `supported_firmwares` lists (`-details`), and the `-mismatch` filter. Driver versions are matched by prefix so vendor build suffixes don't cause false mismatches.
+
+2. **The live Broadcom Compatibility Guide API (fallback, baseline only).** Anything not covered by the offline DB — the system chassis, the CPU, and I/O devices absent from the DB — is checked against the live API. This confirms whether the hardware **baseline** is certified (`TRUE`/`FALSE`) but cannot certify an exact firmware/driver combination, so those columns report `N/A`. Live calls are protected by timeouts and bounded retry/backoff, and identical hardware seen across many hosts is queried **once** and reused (cross-host de-duplication) to avoid hammering the endpoint.
+
+The **vSAN Offline Database** (`vsan-offline-hcl.json`) is downloaded automatically, refreshed when older than 24 hours, and written atomically with an integrity check so an interrupted or truncated download can never corrupt the cache. Relocate it with `-vsanhcl`, or run fully air-gapped with `-offline` (see [Offline / Air-Gapped Operation](#-offline--air-gapped-operation)).
+
+### **Certification status vocabulary**
+
+Every result carries three verdicts — `hw_certified`, `driver_certified`, and `firmware_certified` — each one of:
+
+| Value | Meaning |
+| ----- | ----- |
+| `TRUE` | Certified for the target release. |
+| `FALSE` | Checked and **not** certified. |
+| `N/A` | Not applicable or not determinable from the available data (e.g. a firmware verdict for a device the offline DB has no matrix for, or any driver/firmware column when only the live API baseline was available). |
+| `ERROR` | A live Broadcom API lookup failed (network or parse error). Kept **distinct from `FALSE`** so a transient outage is never mistaken for "not certified". |
+| `SKIPPED` | The check was not performed — e.g. an API-only check under `-offline`. |
 
 ## **🛡️ Excluding Specific Devices**
 
@@ -203,7 +234,7 @@ You can filter devices using three different methods:
 
 **Example `exclude.json` Payload:**
 
-```bash
+```json
 {  
   "names": [  
     "Lewisburg SATA AHCI Controller",  
