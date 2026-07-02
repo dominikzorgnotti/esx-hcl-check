@@ -29,7 +29,7 @@ jobs:
       run: go build -v -o esx-hcl-check .
 
     - name: Test
-      run: go test -v ./...
+      run: go test -race -v ./...
 
     - name: Upload executable artifact
       uses: actions/upload-artifact@v4

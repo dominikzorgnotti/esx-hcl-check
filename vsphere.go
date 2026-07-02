@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -107,12 +108,43 @@ func classifyConnectError(ctx context.Context, host string, err error) error {
 	}
 }
 
+// hostJob is one planned output entry: either an already-resolved record
+// (ready, e.g. an enumeration-failure skip) or a host that still needs its
+// hardware extracted.
+type hostJob struct {
+	ready   *RawHostData // non-nil => already resolved; emit as-is
+	hostRef types.ManagedObjectReference
+	dcName  string
+	clsName string
+}
+
+// runBounded runs fn(i) for i in [0,n) with at most `workers` running at once,
+// and blocks until all complete. fn is responsible for writing its own slot, so
+// callers get deterministic, index-ordered results regardless of completion
+// order. workers < 1 is treated as 1 (fully sequential).
+func runBounded(n, workers int, fn func(i int)) {
+	if workers < 1 {
+		workers = 1
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fn(idx)
+		}(i)
+	}
+	wg.Wait()
+}
+
 // collectVSphereData traverses the vCenter inventory and builds the raw hardware definitions.
-func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, clsTarget string, debugPci, vsanBeta bool, excludeCfg ExcludeConfig) ([]RawHostData, error) {
+func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, clsTarget string, debugPci, vsanBeta bool, excludeCfg ExcludeConfig, workers int) ([]RawHostData, error) {
 	finder := find.NewFinder(client.Client, true)
 	pc := property.DefaultCollector(client.Client)
-
-	var allHostData []RawHostData
+	source := client.Client.URL().Host
 
 	dcQuery := "*"
 	if dcTarget != "" {
@@ -122,6 +154,10 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 	if err != nil {
 		return nil, fmt.Errorf("failed to find datacenters: %w", err)
 	}
+
+	// Enumerate work sequentially (the finder is stateful and this is cheap),
+	// building an ordered list of jobs so output ordering stays deterministic.
+	var jobs []hostJob
 
 	for _, dc := range datacenters {
 		finder.SetDatacenter(dc)
@@ -141,18 +177,16 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 				// Cannot enumerate this cluster's hosts (commonly missing
 				// permissions). Record a skipped-cluster entry so the failure is
 				// visible instead of a silently-absent cluster.
-				allHostData = append(allHostData, RawHostData{
-					Source:     client.Client.URL().Host,
+				jobs = append(jobs, hostJob{ready: &RawHostData{
+					Source:     source,
 					Datacenter: dc.Name(),
 					Cluster:    cluster.Name(),
 					SkipReason: fmt.Sprintf("could not enumerate hosts: %v", err),
-				})
+				}})
 				continue
 			}
 			for _, hostRef := range hosts {
-				if hostData := extractHostHardware(ctx, client, pc, hostRef.Reference(), dc.Name(), cluster.Name(), debugPci, vsanBeta, excludeCfg); hostData != nil {
-					allHostData = append(allHostData, *hostData)
-				}
+				jobs = append(jobs, hostJob{hostRef: hostRef.Reference(), dcName: dc.Name(), clsName: cluster.Name()})
 			}
 		}
 
@@ -165,23 +199,36 @@ func collectVSphereData(ctx context.Context, client *govmomi.Client, dcTarget, c
 					}
 					if hosts, err := cr.Hosts(ctx); err == nil {
 						for _, hostRef := range hosts {
-							if hostData := extractHostHardware(ctx, client, pc, hostRef.Reference(), dc.Name(), "", debugPci, vsanBeta, excludeCfg); hostData != nil {
-								allHostData = append(allHostData, *hostData)
-							}
+							jobs = append(jobs, hostJob{hostRef: hostRef.Reference(), dcName: dc.Name(), clsName: ""})
 						}
 					} else {
-						allHostData = append(allHostData, RawHostData{
-							Source:     client.Client.URL().Host,
+						jobs = append(jobs, hostJob{ready: &RawHostData{
+							Source:     source,
 							Datacenter: dc.Name(),
 							Cluster:    "",
 							SkipReason: fmt.Sprintf("could not enumerate standalone host %s: %v", cr.Name(), err),
-						})
+						}})
 					}
 				}
 			}
 		}
 	}
-	return allHostData, nil
+
+	// Extract per-host hardware concurrently (bounded), each worker writing only
+	// its own indexed slot. extractHostHardware never returns nil, so every slot
+	// is filled.
+	results := make([]RawHostData, len(jobs))
+	runBounded(len(jobs), workers, func(i int) {
+		if jobs[i].ready != nil {
+			results[i] = *jobs[i].ready
+			return
+		}
+		if hd := extractHostHardware(ctx, client, pc, jobs[i].hostRef, jobs[i].dcName, jobs[i].clsName, debugPci, vsanBeta, excludeCfg); hd != nil {
+			results[i] = *hd
+		}
+	})
+
+	return results, nil
 }
 
 // extractHostHardware fetches raw vSphere properties and maps them to the RawHostData struct.
