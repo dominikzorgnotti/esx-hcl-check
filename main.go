@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"time"
 )
 
 // maxWorkers is the hard ceiling for -workers: enough parallelism to speed up
@@ -43,6 +44,7 @@ func main() {
 		mismatch    = flag.Bool("mismatch", false, "Filter output to ONLY show hardware that is certified but has a driver/firmware mismatch")
 		quiet       = flag.Bool("quiet", false, "Suppress warnings about missing firmware/driver information")
 		workers     = flag.Int("workers", 4, "How many hosts to collect from at once (1-8). 1 = sequential, one host at a time; higher = that many in parallel")
+		statsFlag   = flag.Bool("stats", false, "Emit run statistics (inventory counts and query timings) as a 'stats' block/key")
 	)
 	flag.Parse()
 
@@ -97,12 +99,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "# Collecting inventory and hardware data...")
 	}
 
+	collectStart := time.Now()
 	rawInventory, err := collectVSphereData(ctx, client, *dcTarget, *clsTarget, *debugPci, *vsanBeta, excludeCfg, *workers)
 	if err != nil {
 		client.Logout(ctx)
 		fmt.Fprintf(os.Stderr, "Error discovering inventory: %v\n", err)
 		os.Exit(2)
 	}
+	vcenterQueryMs := time.Since(collectStart).Milliseconds()
 	client.Logout(ctx)
 
 	savedPath, err := saveRawInventory(rawInventory, *vsphereJson)
@@ -115,14 +119,30 @@ func main() {
 		fmt.Fprintf(os.Stderr, "# Raw inventory saved to: %s\n\n", savedPath)
 	}
 
+	// Assemble run statistics: inventory counts now, query timings as we go.
+	stats := computeInventoryStats(rawInventory)
+	stats.VCenterQueryMs = vcenterQueryMs
+	var statsOut *Stats
+	if *statsFlag {
+		statsOut = &stats
+	}
+
 	if *noHCL {
+		// No HCL phase; still surface stats (inventory + vCenter timing) if asked.
+		if statsOut != nil {
+			if *jsonOutput {
+				printJSON([]HostComponents{}, statsOut, *quiet)
+			} else {
+				printStatsText(statsOut)
+			}
+		}
 		return
 	}
 
 	// ---------------------------------------------------------
 	// PHASE 2: HCL Verification (API + vSAN DB)
 	// ---------------------------------------------------------
-	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci, *vsanHclFile)
+	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci, *vsanHclFile, &stats)
 
 	// Compute the exit code from the complete result set, before -unique/filters
 	// drop entries, so the process status always reflects the true findings.
@@ -139,9 +159,9 @@ func main() {
 	// PHASE 3: Output Formatting
 	// ---------------------------------------------------------
 	if *jsonOutput {
-		printJSON(hclResults, *quiet)
+		printJSON(hclResults, statsOut, *quiet)
 	} else {
-		printText(hclResults, *quiet)
+		printText(hclResults, statsOut, *quiet)
 	}
 
 	os.Exit(exitCode)

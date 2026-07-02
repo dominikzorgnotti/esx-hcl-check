@@ -20,8 +20,9 @@ import (
 // the query inputs, so caching by those inputs is exact rather than heuristic.
 // The mutex makes it safe for concurrent evaluation.
 type queryCache struct {
-	mu      sync.Mutex
-	results map[string]CertStatus
+	mu       sync.Mutex
+	results  map[string]CertStatus
+	liveTime time.Duration // total wall time spent in live (uncached) queries
 }
 
 func newQueryCache() *queryCache {
@@ -57,13 +58,16 @@ func (c *queryCache) getWith(query func(string, []map[string]interface{}, []stri
 		return v
 	}
 
+	t0 := time.Now()
 	v = query(programId, filters, keywords, targetRelease)
+	elapsed := time.Since(t0)
 
+	c.mu.Lock()
+	c.liveTime += elapsed
 	if v != CertError {
-		c.mu.Lock()
 		c.results[key] = v
-		c.mu.Unlock()
 	}
+	c.mu.Unlock()
 	return v
 }
 
@@ -129,10 +133,16 @@ func doBroadcomWithRetry(newReq func() (*http.Request, error)) (*http.Response, 
 }
 
 // performHCLChecks processes the raw inventory and maps it to Broadcom search queries.
-func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci bool, vsanHclPath string) []HostComponents {
+// If stats is non-nil, it records the vSAN DB load time and the total live
+// Broadcom query time.
+func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci bool, vsanHclPath string, stats *Stats) []HostComponents {
 
 	// Ensure we have an up-to-date offline vSAN database
+	vsanStart := time.Now()
 	vsanDB, err := loadVsanHCL(vsanHclPath)
+	if stats != nil {
+		stats.VsanDBQueryMs = time.Since(vsanStart).Milliseconds()
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to load or download vSAN HCL database: %v\n", err)
 	}
@@ -343,6 +353,10 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		}
 
 		results = append(results, hostComp)
+	}
+
+	if stats != nil {
+		stats.BroadcomQueryMs = qc.liveTime.Milliseconds()
 	}
 	return results
 }
