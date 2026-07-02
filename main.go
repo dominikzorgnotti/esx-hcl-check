@@ -55,19 +55,24 @@ func main() {
 		os.Exit(2)
 	}
 
+	if *detailsOut {
+		*jsonOutput = true
+	}
+
+	// warnings are routed by output mode: to stderr in text mode (visible during
+	// the run), or into the JSON payload's "warnings" key in JSON mode (so stdout
+	// stays a single valid JSON document for CI/CD).
+	ws := &warnSink{json: *jsonOutput}
+
 	// Validate -workers: reject nonsensical values and enforce the hard maximum.
 	if v, err := normalizeWorkers(*workers); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v.\n", err)
 		os.Exit(2)
 	} else {
 		if v != *workers {
-			fmt.Fprintf(os.Stderr, "Warning: -workers capped at the maximum of %d (requested %d).\n", maxWorkers, *workers)
+			ws.add(fmt.Sprintf("-workers capped at the maximum of %d (requested %d).", maxWorkers, *workers))
 		}
 		*workers = v
-	}
-
-	if *detailsOut {
-		*jsonOutput = true
 	}
 
 	// Load Exclude Rules
@@ -87,10 +92,9 @@ func main() {
 	// Connectivity handling — only relevant when the HCL phase will run.
 	if !*noHCL {
 		if *offline {
-			fmt.Fprintln(os.Stderr, "WARNING: -offline is set. Broadcom Compatibility Guide checks are skipped; affected components are marked SKIPPED.")
-			fmt.Fprintln(os.Stderr, "         Verification uses only the local vSAN offline HCL database.")
-			fmt.Fprintf(os.Stderr, "         Ensure it exists at %q (or pass -vsanhcl <path>). If missing, download it from\n", *vsanHclFile)
-			fmt.Fprintf(os.Stderr, "         %s and save it to that path.\n\n", vsanHCLURL)
+			ws.add("-offline mode: Broadcom Compatibility Guide checks are skipped; affected components are marked SKIPPED.")
+			ws.add(fmt.Sprintf("Verification uses only the local vSAN HCL database at %q (override with -vsanhcl).", *vsanHclFile))
+			ws.add(fmt.Sprintf("If the database is missing, download it from %s and save it to that path.", vsanHCLURL))
 		} else if failures := checkConnectivity(5 * time.Second); len(failures) > 0 {
 			fmt.Fprintln(os.Stderr, "Error: cannot reach the online HCL sources required for verification:")
 			for _, f := range failures {
@@ -155,7 +159,7 @@ func main() {
 		// No HCL phase; still surface stats (inventory + vCenter timing) if asked.
 		if statsOut != nil {
 			if *jsonOutput {
-				printJSON([]HostComponents{}, statsOut, *quiet)
+				printJSON([]HostComponents{}, ws.messages, statsOut, *quiet)
 			} else {
 				printStatsText(statsOut)
 			}
@@ -166,7 +170,7 @@ func main() {
 	// ---------------------------------------------------------
 	// PHASE 2: HCL Verification (API + vSAN DB)
 	// ---------------------------------------------------------
-	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci, *offline, *vsanHclFile, &stats)
+	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci, *offline, *vsanHclFile, &stats, ws)
 
 	// Compute the exit code from the complete result set, before -unique/filters
 	// drop entries, so the process status always reflects the true findings.
@@ -183,7 +187,7 @@ func main() {
 	// PHASE 3: Output Formatting
 	// ---------------------------------------------------------
 	if *jsonOutput {
-		printJSON(hclResults, statsOut, *quiet)
+		printJSON(hclResults, ws.messages, statsOut, *quiet)
 	} else {
 		printText(hclResults, statsOut, *quiet)
 	}

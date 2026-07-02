@@ -42,6 +42,22 @@ func computeInventoryStats(inv []RawHostData) Stats {
 	return s
 }
 
+// warnSink routes warnings by output mode: to stderr immediately in text mode
+// (so they appear during the run), or collected into messages for inclusion in
+// the JSON payload in JSON mode (so stdout stays a single valid JSON document).
+type warnSink struct {
+	json     bool
+	messages []string
+}
+
+func (w *warnSink) add(msg string) {
+	if w.json {
+		w.messages = append(w.messages, msg)
+	} else {
+		fmt.Fprintln(os.Stderr, msg)
+	}
+}
+
 // writeFileAtomic writes data to path atomically: it writes to a temporary file
 // in the same directory, flushes it, then renames it into place. A crash or
 // truncated write therefore never leaves a partially-written (corrupt) file at
@@ -224,7 +240,7 @@ func printStatsText(s *Stats) {
 // (when -stats is set) stats. Extracted from printJSON so the wire shape is
 // unit-testable. Note: it clears per-host Issues (they are aggregated to the
 // top level), mutating data in place, so call it once at output time.
-func buildJSONOutput(data []HostComponents, stats *Stats, quiet bool) any {
+func buildJSONOutput(data []HostComponents, warnings []string, stats *Stats, quiet bool) any {
 	var allIssues []MissingDetail
 	for i := range data {
 		if !quiet {
@@ -234,21 +250,23 @@ func buildJSONOutput(data []HostComponents, stats *Stats, quiet bool) any {
 	}
 
 	return struct {
-		Results []HostComponents `json:"results"`
-		Issues  []MissingDetail  `json:"issues,omitempty"`
-		Stats   *Stats           `json:"stats,omitempty"`
+		Results  []HostComponents `json:"results"`
+		Issues   []MissingDetail  `json:"issues,omitempty"`
+		Warnings []string         `json:"warnings,omitempty"`
+		Stats    *Stats           `json:"stats,omitempty"`
 	}{
-		Results: data,
-		Issues:  allIssues,
-		Stats:   stats,
+		Results:  data,
+		Issues:   allIssues,
+		Warnings: warnings,
+		Stats:    stats,
 	}
 }
 
-func printJSON(data []HostComponents, stats *Stats, quiet bool) {
+func printJSON(data []HostComponents, warnings []string, stats *Stats, quiet bool) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(buildJSONOutput(data, stats, quiet)); err != nil {
+	if err := enc.Encode(buildJSONOutput(data, warnings, stats, quiet)); err != nil {
 		fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
 	}
 }

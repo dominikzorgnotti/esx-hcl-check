@@ -180,16 +180,16 @@ func doBroadcomWithRetry(newReq func() (*http.Request, error)) (*http.Response, 
 // the local vSAN offline DB still get a real verdict. If stats is non-nil, it
 // records the vSAN DB load time, the total live Broadcom query time, and the
 // number of skipped checks.
-func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci, offline bool, vsanHclPath string, stats *Stats) []HostComponents {
+func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci, offline bool, vsanHclPath string, stats *Stats, ws *warnSink) []HostComponents {
 
 	// Ensure we have an up-to-date offline vSAN database
 	vsanStart := time.Now()
-	vsanDB, err := loadVsanHCL(vsanHclPath, offline)
+	vsanDB, err := loadVsanHCL(vsanHclPath, offline, ws)
 	if stats != nil {
 		stats.VsanDBQueryMs = time.Since(vsanStart).Milliseconds()
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Failed to load or download vSAN HCL database: %v\n", err)
+		ws.add(fmt.Sprintf("Failed to load or download vSAN HCL database: %v", err))
 	}
 
 	var results []HostComponents
@@ -430,7 +430,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 // vSAN Offline DB Engine
 // -------------------------------------------------------------
 
-func loadVsanHCL(path string, offline bool) (*VsanOfflineDB, error) {
+func loadVsanHCL(path string, offline bool, ws *warnSink) (*VsanOfflineDB, error) {
 	needsDownload := false
 
 	_, err := os.Stat(path)
@@ -457,7 +457,7 @@ func loadVsanHCL(path string, offline bool) (*VsanOfflineDB, error) {
 			return nil, fmt.Errorf("vSAN HCL database not found at %q and -offline prevents downloading it.\n"+
 				"  Download it manually from %s and save it to that path, or pass -vsanhcl <path>", path, vsanHCLURL)
 		}
-		fmt.Fprintf(os.Stderr, "Warning: vSAN HCL database at %q may be stale; -offline prevents refreshing it.\n", path)
+		ws.add(fmt.Sprintf("vSAN HCL database at %q may be stale; -offline prevents refreshing it.", path))
 	}
 
 	if needsDownload && !offline {
