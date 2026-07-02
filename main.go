@@ -9,6 +9,22 @@ import (
 	"regexp"
 )
 
+// maxWorkers is the hard ceiling for -workers: enough parallelism to speed up
+// large environments without overwhelming vCenter or the Broadcom API.
+const maxWorkers = 8
+
+// normalizeWorkers validates the -workers value: it errors below 1 and caps
+// above maxWorkers. The returned value is always within [1, maxWorkers].
+func normalizeWorkers(n int) (int, error) {
+	if n < 1 {
+		return 0, fmt.Errorf("-workers must be at least 1 (got %d)", n)
+	}
+	if n > maxWorkers {
+		return maxWorkers, nil
+	}
+	return n, nil
+}
+
 func main() {
 	var (
 		jsonOutput  = flag.Bool("json", false, "Output final HCL results in JSON format")
@@ -26,7 +42,7 @@ func main() {
 		unsupported = flag.Bool("unsupported", false, "Filter output to ONLY show hardware that is not certified")
 		mismatch    = flag.Bool("mismatch", false, "Filter output to ONLY show hardware that is certified but has a driver/firmware mismatch")
 		quiet       = flag.Bool("quiet", false, "Suppress warnings about missing firmware/driver information")
-		workers     = flag.Int("workers", 8, "Maximum number of hosts to collect from in parallel (use 1 for fully sequential)")
+		workers     = flag.Int("workers", 4, "Number of hosts to collect from in parallel; valid range 1-8 (use 1 for fully sequential)")
 	)
 	flag.Parse()
 
@@ -34,6 +50,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Error: The -release parameter is mandatory.")
 		fmt.Fprintln(os.Stderr, "Hint: The input should match the 'Product Release Version' on the Compatibility Guide, e.g. 'ESXi 9.1' or 'ESXi 8.0 U3'")
 		os.Exit(2)
+	}
+
+	// Validate -workers: reject nonsensical values and enforce the hard maximum.
+	if v, err := normalizeWorkers(*workers); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v.\n", err)
+		os.Exit(2)
+	} else {
+		if v != *workers {
+			fmt.Fprintf(os.Stderr, "Warning: -workers capped at the maximum of %d (requested %d).\n", maxWorkers, *workers)
+		}
+		*workers = v
 	}
 
 	if *detailsOut {
