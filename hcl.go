@@ -10,8 +10,62 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
+
+// queryCache memoizes Broadcom baseline lookups across hosts within a single
+// run. Identical hardware on many hosts (a common cluster shape) otherwise
+// issues one identical network call per host; the API result depends only on
+// the query inputs, so caching by those inputs is exact rather than heuristic.
+// The mutex makes it safe for concurrent evaluation.
+type queryCache struct {
+	mu      sync.Mutex
+	results map[string]CertStatus
+}
+
+func newQueryCache() *queryCache {
+	return &queryCache{results: make(map[string]CertStatus)}
+}
+
+// cacheKey canonicalizes the query inputs. json.Marshal sorts map keys, so the
+// encoding is deterministic for the same logical filter set.
+func cacheKey(programId string, filters []map[string]interface{}, keywords []string, targetRelease string) string {
+	fb, _ := json.Marshal(filters)
+	kb, _ := json.Marshal(keywords)
+	return programId + "\x00" + targetRelease + "\x00" + string(fb) + "\x00" + string(kb)
+}
+
+// get returns a cached verdict or performs the live Broadcom lookup and caches
+// it.
+func (c *queryCache) get(programId string, filters []map[string]interface{}, keywords []string, targetRelease string) CertStatus {
+	return c.getWith(queryBroadcomAPI, programId, filters, keywords, targetRelease)
+}
+
+// getWith is the testable core of get: it takes the query function so tests can
+// inject a fake and assert dedup behaviour without hitting the network.
+// Transient failures (CertError) are not cached, so a blip on the first host
+// does not poison every identical device in the run — later occurrences retry.
+func (c *queryCache) getWith(query func(string, []map[string]interface{}, []string, string) CertStatus,
+	programId string, filters []map[string]interface{}, keywords []string, targetRelease string) CertStatus {
+	key := cacheKey(programId, filters, keywords, targetRelease)
+
+	c.mu.Lock()
+	v, ok := c.results[key]
+	c.mu.Unlock()
+	if ok {
+		return v
+	}
+
+	v = query(programId, filters, keywords, targetRelease)
+
+	if v != CertError {
+		c.mu.Lock()
+		c.results[key] = v
+		c.mu.Unlock()
+	}
+	return v
+}
 
 // broadcomHTTPClient bounds all outbound Broadcom HCL calls (vSAN DB download and
 // the compatibility-guide API) so a slow or hung endpoint cannot stall the scan
@@ -85,6 +139,10 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 
 	var results []HostComponents
 
+	// Memoize Broadcom baseline lookups so identical hardware across hosts is
+	// queried once, not once per host.
+	qc := newQueryCache()
+
 	for _, raw := range rawInventory {
 		hostComp := HostComponents{
 			Source:     raw.Source,
@@ -104,7 +162,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		// 1. System Chassis
 		sysFullModel := fmt.Sprintf("%s %s", raw.SysVendor, raw.SysModel)
 		sysFilters := []map[string]interface{}{{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}}}
-		sysCertified := queryBroadcomAPI("server", sysFilters, []string{raw.SysModel}, releaseVersion)
+		sysCertified := qc.get("server", sysFilters, []string{raw.SysModel}, releaseVersion)
 
 		sysRes := buildSystemQuery(sysFullModel, raw.SysModel, releaseVersion)
 		sysRes.Certified = sysCertified
@@ -117,7 +175,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		cpuKeyword := raw.CpuModel
 		if raw.CpuId != "" { cpuKeyword = raw.CpuId }
 		cpuFilters := []map[string]interface{}{{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}}}
-		cpuCertified := queryBroadcomAPI("cpu", cpuFilters, []string{cpuKeyword}, releaseVersion)
+		cpuCertified := qc.get("cpu", cpuFilters, []string{cpuKeyword}, releaseVersion)
 
 		cpuRes := buildCPUQuery(raw.CpuModel, raw.CpuId, releaseVersion)
 		if details && raw.CpuId != "" { cpuRes.CPUID = raw.CpuId }
@@ -192,7 +250,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 							{"displayKey": "svid", "filterValues": []string{svidHex}},
 							{"displayKey": "ssid", "filterValues": []string{ssidHex}},
 						}
-						res.Certified = queryBroadcomAPI("io", filters, []string{}, releaseVersion)
+						res.Certified = qc.get("io", filters, []string{}, releaseVersion)
 						res.HCLLink = buildHexQueryURL(releaseVersion, int16(pci.VID), int16(pci.DID), int16(pci.SVID), int16(pci.SSID))
 					}
 				}
@@ -271,11 +329,11 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					if cleanVen != "" && !strings.EqualFold(cleanVen, "NVMe") {
 						filters = append(filters, map[string]interface{}{"displayKey": "partnerName", "filterValues": []string{cleanVen}})
 					}
-					res.Certified = queryBroadcomAPI("vsan", filters, []string{disk.Model}, releaseVersion)
+					res.Certified = qc.get("vsan", filters, []string{disk.Model}, releaseVersion)
 
 					// Retry without the partner filter if the API rejected the request
 					if res.Certified == CertError && len(filters) > 0 {
-						res.Certified = queryBroadcomAPI("vsan", nil, []string{disk.Model}, releaseVersion)
+						res.Certified = qc.get("vsan", nil, []string{disk.Model}, releaseVersion)
 					}
 				}
 
