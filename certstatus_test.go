@@ -14,6 +14,7 @@ func TestCertStatusStringAndMarshal(t *testing.T) {
 		{CertFalse, "FALSE"},
 		{CertNA, "N/A"},
 		{CertError, "ERROR"},
+		{CertSkipped, "SKIPPED"},
 		{CertStatus(999), "N/A"}, // out-of-range value falls back to N/A
 	}
 	for _, c := range cases {
@@ -35,7 +36,8 @@ func TestCertStatusUnmarshal(t *testing.T) {
 		`"TRUE"`:  CertTrue,
 		`"FALSE"`: CertFalse,
 		`"N/A"`:   CertNA,
-		`"ERROR"`: CertError,
+		`"ERROR"`:   CertError,
+		`"SKIPPED"`: CertSkipped,
 		`"true"`:  CertTrue,  // case-insensitive
 		`"weird"`: CertNA,    // unknown token -> N/A
 		`""`:      CertNA,    // empty -> N/A

@@ -9,7 +9,7 @@ import (
 // top-level "stats" key next to "results" (and "issues"), and that it is absent
 // when stats is nil.
 func TestJSONOutputStatsPlacement(t *testing.T) {
-	withStats := buildJSONOutput([]HostComponents{{Hostname: "esx-01"}}, &Stats{Hosts: 1}, true)
+	withStats := buildJSONOutput([]HostComponents{{Hostname: "esx-01"}}, []string{"-offline mode active"}, &Stats{Hosts: 1}, true)
 	b, err := json.Marshal(withStats)
 	if err != nil {
 		t.Fatal(err)
@@ -21,16 +21,22 @@ func TestJSONOutputStatsPlacement(t *testing.T) {
 	if _, ok := m["results"]; !ok {
 		t.Error("expected top-level 'results' key")
 	}
+	if _, ok := m["warnings"]; !ok {
+		t.Error("expected top-level 'warnings' key when warnings provided")
+	}
 	if _, ok := m["stats"]; !ok {
 		t.Error("expected top-level 'stats' key when stats provided")
 	}
 
-	without := buildJSONOutput([]HostComponents{{Hostname: "esx-01"}}, nil, true)
+	without := buildJSONOutput([]HostComponents{{Hostname: "esx-01"}}, nil, nil, true)
 	b2, _ := json.Marshal(without)
 	var m2 map[string]json.RawMessage
 	json.Unmarshal(b2, &m2)
 	if _, ok := m2["stats"]; ok {
 		t.Error("did not expect 'stats' key when stats is nil")
+	}
+	if _, ok := m2["warnings"]; ok {
+		t.Error("did not expect 'warnings' key when warnings is empty")
 	}
 }
 

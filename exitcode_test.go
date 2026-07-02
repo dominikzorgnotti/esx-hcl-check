@@ -29,6 +29,11 @@ func TestComputeExitCode(t *testing.T) {
 			want: 2,
 		},
 		{
+			name: "skipped check (offline) -> 2",
+			data: []HostComponents{{Results: []HCLResult{{Certified: CertTrue}, {Certified: CertSkipped}}}},
+			want: 2,
+		},
+		{
 			name: "skipped host -> 2",
 			data: []HostComponents{{SkipReason: "host not connected (state: disconnected)"}},
 			want: 2,

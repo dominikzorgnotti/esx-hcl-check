@@ -13,10 +13,11 @@ import (
 type CertStatus int
 
 const (
-	CertNA    CertStatus = iota // "N/A"   — not applicable / not determined
-	CertTrue                    // "TRUE"  — certified
-	CertFalse                   // "FALSE" — checked, not certified
-	CertError                   // "ERROR" — lookup failed; result unknown
+	CertNA      CertStatus = iota // "N/A"     — not applicable / not determined
+	CertTrue                      // "TRUE"    — certified
+	CertFalse                     // "FALSE"   — checked, not certified
+	CertError                     // "ERROR"   — lookup failed; result unknown
+	CertSkipped                   // "SKIPPED" — not checked (e.g. -offline, no live API)
 )
 
 func (c CertStatus) String() string {
@@ -27,6 +28,8 @@ func (c CertStatus) String() string {
 		return "FALSE"
 	case CertError:
 		return "ERROR"
+	case CertSkipped:
+		return "SKIPPED"
 	default:
 		return "N/A"
 	}
@@ -49,6 +52,8 @@ func parseCertStatus(s string) CertStatus {
 		return CertFalse
 	case "ERROR":
 		return CertError
+	case "SKIPPED":
+		return CertSkipped
 	default:
 		return CertNA
 	}
@@ -169,6 +174,10 @@ type Stats struct {
 	HostsSkipped   int `json:"hosts_skipped,omitempty"`
 	IOCards        int `json:"io_cards"`
 	StorageDevices int `json:"storage_devices"`
+
+	// SkippedChecks counts components whose certification could not be checked
+	// (e.g. -offline skipping the live Broadcom API). Omitted when zero.
+	SkippedChecks int `json:"skipped_checks,omitempty"`
 
 	// Runtime timings (milliseconds)
 	VCenterQueryMs  int64 `json:"vcenter_query_ms"`

@@ -45,6 +45,7 @@ func main() {
 		quiet       = flag.Bool("quiet", false, "Suppress warnings about missing firmware/driver information")
 		workers     = flag.Int("workers", 4, "How many hosts to collect from at once (1-8). 1 = sequential, one host at a time; higher = that many in parallel")
 		statsFlag   = flag.Bool("stats", false, "Emit run statistics (inventory counts and query timings) as a 'stats' block/key")
+		offline     = flag.Bool("offline", false, "Run without internet: skip all Broadcom Compatibility Guide API checks (marked SKIPPED) and use only the local vSAN HCL database")
 	)
 	flag.Parse()
 
@@ -54,19 +55,24 @@ func main() {
 		os.Exit(2)
 	}
 
+	if *detailsOut {
+		*jsonOutput = true
+	}
+
+	// warnings are routed by output mode: to stderr in text mode (visible during
+	// the run), or into the JSON payload's "warnings" key in JSON mode (so stdout
+	// stays a single valid JSON document for CI/CD).
+	ws := &warnSink{json: *jsonOutput}
+
 	// Validate -workers: reject nonsensical values and enforce the hard maximum.
 	if v, err := normalizeWorkers(*workers); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v.\n", err)
 		os.Exit(2)
 	} else {
 		if v != *workers {
-			fmt.Fprintf(os.Stderr, "Warning: -workers capped at the maximum of %d (requested %d).\n", maxWorkers, *workers)
+			ws.add(fmt.Sprintf("-workers capped at the maximum of %d (requested %d).", maxWorkers, *workers))
 		}
 		*workers = v
-	}
-
-	if *detailsOut {
-		*jsonOutput = true
 	}
 
 	// Load Exclude Rules
@@ -80,6 +86,28 @@ func main() {
 					}
 				}
 			}
+		}
+	}
+
+	// Connectivity handling — only relevant when the HCL phase will run.
+	if !*noHCL {
+		if *offline {
+			ws.add("-offline mode: Broadcom Compatibility Guide checks are skipped; affected components are marked SKIPPED.")
+			ws.add(fmt.Sprintf("Verification uses only the local vSAN HCL database at %q (override with -vsanhcl).", *vsanHclFile))
+			ws.add(fmt.Sprintf("If the database is missing, download it from %s and save it to that path.", vsanHCLURL))
+		} else if failures := checkConnectivity(5 * time.Second); len(failures) > 0 {
+			fmt.Fprintln(os.Stderr, "Error: cannot reach the online HCL sources required for verification:")
+			for _, f := range failures {
+				fmt.Fprintf(os.Stderr, "  - %s\n", f)
+			}
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "This usually means no internet access, a firewall, or a required proxy. Try one of:")
+			fmt.Fprintln(os.Stderr, "  * Verify this host has internet access to broadcom.com")
+			fmt.Fprintln(os.Stderr, "  * Configure a proxy via the HTTPS_PROXY / HTTP_PROXY / NO_PROXY environment variables")
+			fmt.Fprintln(os.Stderr, "    (a TLS-intercepting proxy may instead surface as a certificate error)")
+			fmt.Fprintln(os.Stderr, "  * Re-run with -offline to skip the Broadcom API and use only the local vSAN HCL database")
+			fmt.Fprintf(os.Stderr, "    (download it from %s and save it to %q, or pass -vsanhcl <path>)\n", vsanHCLURL, *vsanHclFile)
+			os.Exit(2)
 		}
 	}
 
@@ -131,7 +159,7 @@ func main() {
 		// No HCL phase; still surface stats (inventory + vCenter timing) if asked.
 		if statsOut != nil {
 			if *jsonOutput {
-				printJSON([]HostComponents{}, statsOut, *quiet)
+				printJSON([]HostComponents{}, ws.messages, statsOut, *quiet)
 			} else {
 				printStatsText(statsOut)
 			}
@@ -142,7 +170,7 @@ func main() {
 	// ---------------------------------------------------------
 	// PHASE 2: HCL Verification (API + vSAN DB)
 	// ---------------------------------------------------------
-	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci, *vsanHclFile, &stats)
+	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci, *offline, *vsanHclFile, &stats, ws)
 
 	// Compute the exit code from the complete result set, before -unique/filters
 	// drop entries, so the process status always reflects the true findings.
@@ -159,7 +187,7 @@ func main() {
 	// PHASE 3: Output Formatting
 	// ---------------------------------------------------------
 	if *jsonOutput {
-		printJSON(hclResults, statsOut, *quiet)
+		printJSON(hclResults, ws.messages, statsOut, *quiet)
 	} else {
 		printText(hclResults, statsOut, *quiet)
 	}
@@ -171,9 +199,10 @@ func main() {
 //
 //	0 — every component is certified (or not applicable)
 //	1 — at least one component is definitively NOT certified
-//	2 — the scan could not be fully determined: a host/cluster was skipped, or
-//	    an HCL lookup failed (CertError). 2 takes precedence over 1, because an
-//	    incomplete answer should not read as a clean "only known-bad found".
+//	2 — the scan could not be fully determined: a host/cluster was skipped, an
+//	    HCL lookup failed (CertError), or a check was skipped (CertSkipped, e.g.
+//	    -offline). 2 takes precedence over 1, because an incomplete answer should
+//	    not read as a clean "only known-bad found".
 //
 // Fatal run errors (connect/collect/save) also exit 2, handled at their sites.
 func computeExitCode(data []HostComponents) int {
@@ -183,7 +212,7 @@ func computeExitCode(data []HostComponents) int {
 			return 2
 		}
 		for _, res := range host.Results {
-			if res.Certified == CertError {
+			if res.Certified == CertError || res.Certified == CertSkipped {
 				return 2
 			}
 			if res.Certified == CertFalse {
