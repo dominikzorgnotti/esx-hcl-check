@@ -11,12 +11,13 @@ import (
 // URL in a wrapped error).
 func TestConnectToVCDoesNotLeakPassword(t *testing.T) {
 	const secret = "SuperSecret!Passw0rd-do-not-print"
-	t.Setenv("GOVC_URL", "https://esx-hcl-check-nonexistent-host.invalid")
 	t.Setenv("GOVC_USERNAME", "administrator@vsphere.local")
 	t.Setenv("GOVC_PASSWORD", secret)
-	t.Setenv("GOVC_INSECURE", "1")
 
-	_, err := connectToVC(context.Background())
+	_, err := connectToVC(context.Background(), connOptions{
+		URL:      "https://esx-hcl-check-nonexistent-host.invalid",
+		Insecure: true,
+	})
 	if err == nil {
 		t.Fatal("expected a connection error against a bogus host")
 	}

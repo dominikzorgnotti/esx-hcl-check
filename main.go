@@ -47,6 +47,10 @@ func normalizeWorkers(n int) (int, error) {
 func main() {
 	var (
 		jsonOutput  = flag.Bool("json", false, "Output final HCL results in JSON format")
+		vcURL       = flag.String("u", os.Getenv("GOVC_URL"), "vCenter/ESX URL (overrides GOVC_URL)")
+		insecure    = flag.Bool("k", govcInsecure(), "Skip verification of the server certificate (overrides GOVC_INSECURE)")
+		tlsCACerts  = flag.String("tls-ca-certs", os.Getenv("GOVC_TLS_CA_CERTS"), "PEM CA bundle(s) to trust instead of system roots (overrides GOVC_TLS_CA_CERTS)")
+		tlsKnownHst = flag.String("tls-known-hosts", os.Getenv("GOVC_TLS_KNOWN_HOSTS"), "TLS known-hosts thumbprint file (overrides GOVC_TLS_KNOWN_HOSTS)")
 		dcTarget    = flag.String("dc", os.Getenv("GOVC_DATACENTER"), "Target datacenter (optional)")
 		clsTarget   = flag.String("cluster", os.Getenv("GOVC_CLUSTER"), "Target cluster (optional)")
 		esxiRelease = flag.String("release", "", "REQUIRED: Target ESXi version for compatibility validation")
@@ -92,10 +96,10 @@ func main() {
 	// document for CI/CD). CSV takes precedence over JSON for output.
 	ws := &warnSink{json: *jsonOutput && !*csvOut}
 
-	if govcInsecure() {
-		ws.add("GOVC_INSECURE is set — TLS certificate verification is DISABLED. The vCenter connection is vulnerable to man-in-the-middle interception; use it only for trusted, self-signed lab environments.")
-		if os.Getenv("GOVC_TLS_CA_CERTS") != "" || os.Getenv("GOVC_TLS_KNOWN_HOSTS") != "" {
-			ws.add("GOVC_INSECURE overrides GOVC_TLS_CA_CERTS / GOVC_TLS_KNOWN_HOSTS — with certificate verification disabled, the custom CA bundle and known-hosts thumbprints are NOT enforced. Unset GOVC_INSECURE to have them take effect.")
+	if *insecure {
+		ws.add("Insecure mode (GOVC_INSECURE / -k) is set — TLS certificate verification is DISABLED. The vCenter connection is vulnerable to man-in-the-middle interception; use it only for trusted, self-signed lab environments.")
+		if *tlsCACerts != "" || *tlsKnownHst != "" {
+			ws.add("Insecure mode overrides -tls-ca-certs / -tls-known-hosts (GOVC_TLS_CA_CERTS / GOVC_TLS_KNOWN_HOSTS) — with certificate verification disabled, the custom CA bundle and known-hosts thumbprints are NOT enforced. Disable insecure mode to have them take effect.")
 		}
 	}
 
@@ -170,7 +174,12 @@ func main() {
 	// ---------------------------------------------------------
 	// PHASE 1: Data Collection
 	// ---------------------------------------------------------
-	client, err := connectToVC(ctx)
+	client, err := connectToVC(ctx, connOptions{
+		URL:        *vcURL,
+		Insecure:   *insecure,
+		CACerts:    *tlsCACerts,
+		KnownHosts: *tlsKnownHst,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error connecting to vCenter: %v\n", err)
 		os.Exit(2)
