@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -493,6 +494,62 @@ func loadVsanHCL(path string, offline bool, ws *warnSink) (*VsanOfflineDB, error
 	return &db, nil
 }
 
+// parseESXiRelease extracts (major, minor, update) from a vSAN HCL release key
+// like "ESXi 8.0 U3" or "ESXi 9.1". A missing update is 0. ok is false if the
+// string can't be parsed as a version.
+func parseESXiRelease(s string) (maj, min, upd int, ok bool) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.TrimSpace(strings.TrimPrefix(s, "esxi"))
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return 0, 0, 0, false
+	}
+	vparts := strings.Split(fields[0], ".")
+	if len(vparts) < 2 {
+		return 0, 0, 0, false
+	}
+	maj, e1 := strconv.Atoi(vparts[0])
+	min, e2 := strconv.Atoi(vparts[1])
+	if e1 != nil || e2 != nil {
+		return 0, 0, 0, false
+	}
+	if len(fields) > 1 {
+		if n, e := strconv.Atoi(strings.TrimPrefix(fields[1], "u")); e == nil {
+			upd = n
+		}
+	}
+	return maj, min, upd, true
+}
+
+// releaseLess reports whether release a sorts before b. Unparseable values fall
+// back to a plain string comparison so ordering is still deterministic.
+func releaseLess(a, b string) bool {
+	amaj, amin, aupd, aok := parseESXiRelease(a)
+	bmaj, bmin, bupd, bok := parseESXiRelease(b)
+	if !aok || !bok {
+		return a < b
+	}
+	if amaj != bmaj {
+		return amaj < bmaj
+	}
+	if amin != bmin {
+		return amin < bmin
+	}
+	return aupd < bupd
+}
+
+// maxSupportedRelease returns the highest release key in a vSAN HCL entry's
+// "releases" map — i.e. the newest ESXi release the device is certified for.
+func maxSupportedRelease(releases map[string]interface{}) string {
+	best := ""
+	for k := range releases {
+		if best == "" || releaseLess(best, k) {
+			best = k
+		}
+	}
+	return best
+}
+
 func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, res *HCLResult) bool {
 	// Search controller, NIC, and SSD entries by PCI IDs.
 	// NVMe PCIe SSDs can appear in the SSD category in the offline HCL.
@@ -510,6 +567,10 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 
 			releases, ok := item["releases"].(map[string]interface{})
 			if !ok { return true }
+
+			// The device is in the DB — record the newest release it supports,
+			// which is the actionable answer when the target release is not.
+			res.MaxSupportedRelease = maxSupportedRelease(releases)
 
 			relData, exists := releases[release]
 			if !exists { return true }
@@ -632,6 +693,9 @@ func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCL
 
 			releases, ok := item["releases"].(map[string]interface{})
 			if !ok { return true }
+
+			// The device is in the DB — record the newest release it supports.
+			res.MaxSupportedRelease = maxSupportedRelease(releases)
 
 			relData, exists := releases[release]
 			if !exists { return true }
