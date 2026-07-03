@@ -849,7 +849,9 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	var result map[string]interface{}
-	json.Unmarshal(bodyBytes, &result)
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return CertError // malformed response — undetermined, not "not certified"
+	}
 
 	data, ok := result["data"].(map[string]interface{})
 	if !ok {

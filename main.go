@@ -181,12 +181,12 @@ func main() {
 	collectStart := time.Now()
 	rawInventory, err := collectVSphereData(ctx, client, *dcTarget, *clsTarget, *debugPci, *vsanBeta, excludeCfg, *workers)
 	if err != nil {
-		client.Logout(ctx)
+		_ = client.Logout(ctx)
 		fmt.Fprintf(os.Stderr, "Error discovering inventory: %v\n", err)
 		os.Exit(2)
 	}
 	vcenterQueryMs := time.Since(collectStart).Milliseconds()
-	client.Logout(ctx)
+	_ = client.Logout(ctx) // best-effort session cleanup
 
 	savedPath, err := saveRawInventory(rawInventory, *vsphereJson)
 	if err != nil {
