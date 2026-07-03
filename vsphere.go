@@ -33,6 +33,13 @@ const (
 	soapCallTimeout = 30 * time.Second
 )
 
+// govcInsecure reports whether GOVC_INSECURE requests skipping TLS certificate
+// verification for the vCenter connection.
+func govcInsecure() bool {
+	v := strings.ToLower(os.Getenv("GOVC_INSECURE"))
+	return v == "true" || v == "1"
+}
+
 // connectToVC initializes the govmomi client using GOVC_* environment variables.
 func connectToVC(ctx context.Context) (*govmomi.Client, error) {
 	vcURL := os.Getenv("GOVC_URL")
@@ -51,7 +58,7 @@ func connectToVC(ctx context.Context) (*govmomi.Client, error) {
 		u.User = url.UserPassword(username, password)
 	}
 
-	insecure := strings.ToLower(os.Getenv("GOVC_INSECURE")) == "true" || os.Getenv("GOVC_INSECURE") == "1"
+	insecure := govcInsecure()
 
 	connCtx, cancel := context.WithTimeout(ctx, vcConnectTimeout)
 	defer cancel()

@@ -87,6 +87,10 @@ func main() {
 	// document for CI/CD). CSV takes precedence over JSON for output.
 	ws := &warnSink{json: *jsonOutput && !*csvOut}
 
+	if govcInsecure() {
+		ws.add("GOVC_INSECURE is set — TLS certificate verification is DISABLED. The vCenter connection is vulnerable to man-in-the-middle interception; use it only for trusted, self-signed lab environments.")
+	}
+
 	// Validate -workers: reject nonsensical values and enforce the hard maximum.
 	if v, err := normalizeWorkers(*workers); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v.\n", err)
