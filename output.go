@@ -200,17 +200,23 @@ func printText(data []HostComponents, stats *Stats, quiet bool) {
 		fmt.Printf("\n")
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "------------------------------------------------------------------------------------------------------------------------------------------------")
-		fmt.Fprintln(w, "| device\t| device type\t| instances\t| hw certified\t| drv certified\t| fw certified\t| hcl link\t|")
-		fmt.Fprintln(w, "------------------------------------------------------------------------------------------------------------------------------------------------")
-		
+		const ruler = "----------------------------------------------------------------------------------------------------------------------------------"
+		fmt.Fprintln(w, ruler)
+		fmt.Fprintln(w, "| device\t| device type\t| instances\t| hw certified\t| drv certified\t| fw certified\t| max release\t|")
+		fmt.Fprintln(w, ruler)
+
 		for _, res := range hd.Results {
 			fmt.Fprintf(w, "| %s\t| %s\t| %d\t| %s\t| %s\t| %s\t| %s\t|\n",
-				res.Device, res.DeviceType, res.Instances, res.Certified, res.DriverCertified, res.FirmwareCertified, res.HCLLink)
+				res.Device, res.DeviceType, res.Instances, res.Certified, res.DriverCertified, res.FirmwareCertified, res.MaxSupportedRelease)
 		}
 		w.Flush()
 		fmt.Printf("\n---\n\n")
 	}
+
+	// The text table is a high-level summary; the HCL link and hardware IDs live
+	// in the richer machine formats.
+	fmt.Println("For full detail (HCL link, hardware IDs, supported driver/firmware lists), re-run with -csv or -json.")
+	fmt.Println()
 
 	if quiet {
 		return
