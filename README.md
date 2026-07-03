@@ -6,7 +6,7 @@ The tool natively handles complex extraction tasks such as parsing binary CPUID 
 
 ## **🚀 Downloads**
 
-Check out the [releases](https://github.com/dominikzorgnotti/esx-hcl-check/releases) to find the latest binaries for your system.
+Check out the [releases](https://github.com/dominikzorgnotti/esx-hcl-check/releases) to find the latest binaries for your system. Release binaries are built with the [SLSA3](https://slsa.dev) Go builder and ship with signed build provenance — see [Verifying Release Binaries](#-verifying-release-binaries).
 
 ## **🛠️ Requirements for Building the Code**
 
@@ -17,13 +17,7 @@ To compile this code from source, you will need:
 
 **Build Instructions:**
 
-1. Clone or download the repository to your local machine.
-
-Initialize the Go module and fetch the required dependencies:
-```bash
-go mod init esx-hcl-check
-go mod tidy  
-```
+1. Clone the repository to your local machine. Dependencies are pinned in the committed `go.mod` / `go.sum` and fetched automatically on first build.
 
 2. Build the executable:
 
@@ -38,6 +32,22 @@ To stamp a version into the binary (reported by `-version`), pass it via `-ldfla
 ```
 
 Official release binaries are stamped automatically. A plain `go build` reports version `dev`.
+
+## **🔏 Verifying Release Binaries**
+
+Every release binary is built by the [SLSA3](https://slsa.dev) Go builder and published alongside a signed provenance attestation (`<binary>.intoto.jsonl`) that proves it was built from this repository, at the released tag, by the trusted builder — not tampered with in transit or produced on someone's laptop.
+
+To verify a download, install [`slsa-verifier`](https://github.com/slsa-framework/slsa-verifier) and run:
+
+```bash
+slsa-verifier verify-artifact \
+  esx-hcl-check-linux-amd64 \
+  --provenance-path esx-hcl-check-linux-amd64.intoto.jsonl \
+  --source-uri github.com/dominikzorgnotti/esx-hcl-check \
+  --source-tag v0.4.1
+```
+
+A `PASSED: SLSA verification passed` result confirms the binary's origin and integrity.
 
 ## **🚀 Basic Usage (Connection Parameters)**
 
