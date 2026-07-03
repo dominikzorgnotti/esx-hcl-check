@@ -1,64 +1,51 @@
-name: Build and Release Binaries
+name: Build, Provenance & Release Binaries
+
+# Builds each release binary inside the SLSA3 Go builder (a trusted, isolated
+# builder) and attaches a signed provenance attestation alongside it, so a
+# consumer can cryptographically verify the binary was built from this repo at
+# this tag. Requires committed go.mod/go.sum (the builder cannot run go mod init).
 
 on:
   release:
     types: [created]
 
-jobs:
-  build-and-upload:
-    name: Build for ${{ matrix.goos }}/${{ matrix.goarch }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # Required for GitHub Actions to attach files to the release
+permissions: read-all
 
+jobs:
+  # Compute the version metadata to stamp into the binary via ldflags.
+  args:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ldflags.outputs.version }}
+      commit: ${{ steps.ldflags.outputs.commit }}
+      date: ${{ steps.ldflags.outputs.date }}
+    steps:
+      - id: ldflags
+        run: |
+          echo "version=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+  # One trusted build + provenance per platform, uploaded to the release.
+  build:
+    needs: args
+    permissions:
+      id-token: write # keyless (OIDC) provenance signing
+      contents: write # upload the binary and provenance to the release
+      actions: read   # read workflow metadata for the provenance
     strategy:
       matrix:
         include:
-          - goos: linux
-            goarch: amd64
-            ext: ""
-          - goos: windows
-            goarch: amd64
-            ext: ".exe"
-          - goos: darwin
-            goarch: arm64
-            ext: ""
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v7
-
-    - name: Set up Go
-      uses: actions/setup-go@v6
-      with:
-        go-version: '1.26' # Adjust to your current Go version if needed
-
-    - name: Install dependencies
-      run: |
-        go mod init esx-hcl-check && go mod tidy
-
-    - name: Build Binary
-      run: |
-        # Define the output name based on the OS and Architecture
-        BINARY_NAME="esx-hcl-check-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
-
-        # Inject version metadata so the binary self-reports via -version
-        LDFLAGS="-X main.version=${{ github.ref_name }} -X main.commit=${GITHUB_SHA::7} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-        # Build the code for the specific matrix target
-        env GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -v -ldflags "${LDFLAGS}" -o $BINARY_NAME .
-
-    - name: Generate SHA256 Hash
-      run: |
-        BINARY_NAME="esx-hcl-check-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
-        
-        # Calculate the hash and output it to a .sha256 text file
-        sha256sum $BINARY_NAME > ${BINARY_NAME}.sha256
-
-    - name: Upload Release Assets
-      uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/')
-      with:
-        files: |
-          esx-hcl-check-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
-          esx-hcl-check-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}.sha256
+          - os: linux
+            arch: amd64
+          - os: windows
+            arch: amd64
+          - os: darwin
+            arch: arm64
+    uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
+    with:
+      go-version-file: go.mod
+      config-file: .slsa-goreleaser/${{ matrix.os }}-${{ matrix.arch }}.yml
+      evaluated-envs: "VERSION:${{ needs.args.outputs.version }}, COMMIT:${{ needs.args.outputs.commit }}, DATE:${{ needs.args.outputs.date }}"
+      upload-assets: true
+      upload-tag-name: ${{ github.event.release.tag_name }}

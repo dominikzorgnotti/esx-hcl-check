@@ -1,0 +1,12 @@
+version: 1
+env:
+  - CGO_ENABLED=0
+flags:
+  - -trimpath
+goos: windows
+goarch: amd64
+binary: esx-hcl-check-{{ .Os }}-{{ .Arch }}
+ldflags:
+  - "-X main.version={{ .Env.VERSION }}"
+  - "-X main.commit={{ .Env.COMMIT }}"
+  - "-X main.date={{ .Env.DATE }}"
