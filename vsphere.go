@@ -20,6 +20,8 @@ import (
 	"github.com/vmware/govmomi"
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/property"
+	"github.com/vmware/govmomi/session"
+	"github.com/vmware/govmomi/vim25"
 	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/soap"
 	"github.com/vmware/govmomi/vim25/types"
@@ -40,7 +42,56 @@ func govcInsecure() bool {
 	return v == "true" || v == "1"
 }
 
+// configureTLSFromEnv applies govc-compatible TLS settings from the environment
+// to a freshly-constructed soap.Client, before it makes any request. This mirrors
+// govc's own cli/flags/client.go so the tool honors the same env vars:
+//
+//	GOVC_TLS_CA_CERTS          PEM CA bundle(s) trusted *instead of* the system
+//	                           roots (OS PathListSeparator-separated).
+//	GOVC_TLS_KNOWN_HOSTS       "host thumbprint" file used as a verification
+//	                           fallback when normal chain validation fails.
+//	GOVC_TLS_HANDSHAKE_TIMEOUT Go duration string bounding the TLS handshake.
+//
+// A misconfigured value (unreadable/invalid CA bundle, bad duration) is returned
+// as a hard error rather than a warning: silently ignoring it would fall back to
+// weaker verification than the operator asked for, which is exactly the footgun
+// this feature exists to remove. Note that when GOVC_INSECURE disables
+// verification, CA_CERTS/KNOWN_HOSTS have no effect (main warns about that).
+func configureTLSFromEnv(sc *soap.Client) error {
+	if caCerts := os.Getenv("GOVC_TLS_CA_CERTS"); caCerts != "" {
+		if err := sc.SetRootCAs(caCerts); err != nil {
+			return fmt.Errorf("GOVC_TLS_CA_CERTS: cannot load CA bundle(s) %q: %w", caCerts, err)
+		}
+	}
+
+	if knownHosts := os.Getenv("GOVC_TLS_KNOWN_HOSTS"); knownHosts != "" {
+		if err := sc.LoadThumbprints(knownHosts); err != nil {
+			return fmt.Errorf("GOVC_TLS_KNOWN_HOSTS: cannot load thumbprints from %q: %w", knownHosts, err)
+		}
+	}
+
+	if v := os.Getenv("GOVC_TLS_HANDSHAKE_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("GOVC_TLS_HANDSHAKE_TIMEOUT: %q is not a valid Go duration (e.g. \"10s\"): %w", v, err)
+		}
+		sc.DefaultTransport().TLSHandshakeTimeout = d
+	}
+
+	return nil
+}
+
 // connectToVC initializes the govmomi client using GOVC_* environment variables.
+//
+// TLS verification follows govc's model: with GOVC_INSECURE unset/false the
+// server certificate is validated against the host's system root CA store (Go's
+// crypto/tls default, since soap.NewClient leaves tls.Config.RootCAs nil). The
+// GOVC_TLS_* variables (see configureTLSFromEnv) can override the trust anchors
+// or pin thumbprints.
+//
+// govmomi.NewClient offers no hook to configure the soap.Client before its first
+// round-trip (vim25.NewClient immediately retrieves ServiceContent), so we
+// replicate its small assembly here to slot TLS configuration in between.
 func connectToVC(ctx context.Context) (*govmomi.Client, error) {
 	vcURL := os.Getenv("GOVC_URL")
 	if vcURL == "" {
@@ -63,10 +114,28 @@ func connectToVC(ctx context.Context) (*govmomi.Client, error) {
 	connCtx, cancel := context.WithTimeout(ctx, vcConnectTimeout)
 	defer cancel()
 
-	client, err := govmomi.NewClient(connCtx, u, insecure)
+	soapClient := soap.NewClient(u, insecure)
+	if err := configureTLSFromEnv(soapClient); err != nil {
+		return nil, err
+	}
+
+	vimClient, err := vim25.NewClient(connCtx, soapClient)
 	if err != nil {
 		return nil, classifyConnectError(connCtx, u.Host, err)
 	}
+
+	client := &govmomi.Client{
+		Client:         vimClient,
+		SessionManager: session.NewManager(vimClient),
+	}
+
+	// Match govmomi.NewClient: only authenticate when the URL carries credentials.
+	if u.User != nil {
+		if err := client.Login(connCtx, u.User); err != nil {
+			return nil, classifyConnectError(connCtx, u.Host, err)
+		}
+	}
+
 	return client, nil
 }
 
@@ -107,7 +176,7 @@ func classifyConnectError(ctx context.Context, host string, err error) error {
 	msg := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(msg, "certificate") || strings.Contains(msg, "x509") || strings.Contains(msg, "tls"):
-		return fmt.Errorf("TLS verification failed for %s: set GOVC_INSECURE=1 for self-signed certs, or install the CA: %w", host, err)
+		return fmt.Errorf("TLS verification failed for %s: install the CA in the system trust store, point GOVC_TLS_CA_CERTS at the CA bundle, or set GOVC_INSECURE=1 for self-signed lab certs: %w", host, err)
 	case strings.Contains(msg, "incorrect user name or password") || strings.Contains(msg, "login failure") || strings.Contains(msg, "invalidlogin") || strings.Contains(msg, "cannot complete login") || strings.Contains(msg, "permission to perform this operation"):
 		return fmt.Errorf("authentication failed for %s: check GOVC_USERNAME and GOVC_PASSWORD: %w", host, err)
 	default:

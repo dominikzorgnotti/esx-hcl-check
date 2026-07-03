@@ -94,6 +94,9 @@ func main() {
 
 	if govcInsecure() {
 		ws.add("GOVC_INSECURE is set — TLS certificate verification is DISABLED. The vCenter connection is vulnerable to man-in-the-middle interception; use it only for trusted, self-signed lab environments.")
+		if os.Getenv("GOVC_TLS_CA_CERTS") != "" || os.Getenv("GOVC_TLS_KNOWN_HOSTS") != "" {
+			ws.add("GOVC_INSECURE overrides GOVC_TLS_CA_CERTS / GOVC_TLS_KNOWN_HOSTS — with certificate verification disabled, the custom CA bundle and known-hosts thumbprints are NOT enforced. Unset GOVC_INSECURE to have them take effect.")
+		}
 	}
 
 	// Soft-validate -release: warn (don't reject) if it doesn't look like a
