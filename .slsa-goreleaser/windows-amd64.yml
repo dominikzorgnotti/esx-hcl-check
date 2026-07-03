@@ -5,7 +5,7 @@ flags:
   - -trimpath
 goos: windows
 goarch: amd64
-binary: esx-hcl-check-{{ .Os }}-{{ .Arch }}
+binary: esx-hcl-check-{{ .Os }}-{{ .Arch }}.exe
 ldflags:
   - "-X main.version={{ .Env.VERSION }}"
   - "-X main.commit={{ .Env.COMMIT }}"
