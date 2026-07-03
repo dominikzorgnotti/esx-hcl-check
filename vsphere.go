@@ -42,31 +42,45 @@ func govcInsecure() bool {
 	return v == "true" || v == "1"
 }
 
-// configureTLSFromEnv applies govc-compatible TLS settings from the environment
-// to a freshly-constructed soap.Client, before it makes any request. This mirrors
-// govc's own cli/flags/client.go so the tool honors the same env vars:
+// connOptions carries the resolved vCenter connection settings — each field is
+// the command-line flag value, which defaults to its GOVC_* environment variable
+// (see main). Threading these in explicitly, rather than having connectToVC read
+// os.Getenv directly, keeps the flag-overrides-env precedence in one place (the
+// flag declarations) and keeps this path unit-testable.
+type connOptions struct {
+	URL        string // GOVC_URL / -u
+	Insecure   bool   // GOVC_INSECURE / -k
+	CACerts    string // GOVC_TLS_CA_CERTS / -tls-ca-certs
+	KnownHosts string // GOVC_TLS_KNOWN_HOSTS / -tls-known-hosts
+}
+
+// configureTLS applies govc-compatible TLS settings to a freshly-constructed
+// soap.Client, before it makes any request. This mirrors govc's own
+// cli/flags/client.go. caCerts and knownHosts are the already-resolved
+// flag-or-env values; the handshake timeout has no govc flag, so it is read
+// straight from the environment:
 //
-//	GOVC_TLS_CA_CERTS          PEM CA bundle(s) trusted *instead of* the system
-//	                           roots (OS PathListSeparator-separated).
-//	GOVC_TLS_KNOWN_HOSTS       "host thumbprint" file used as a verification
-//	                           fallback when normal chain validation fails.
-//	GOVC_TLS_HANDSHAKE_TIMEOUT Go duration string bounding the TLS handshake.
+//	caCerts (GOVC_TLS_CA_CERTS)          PEM CA bundle(s) trusted *instead of* the
+//	                                     system roots (OS PathListSeparator-separated).
+//	knownHosts (GOVC_TLS_KNOWN_HOSTS)    "host thumbprint" file used as a verification
+//	                                     fallback when normal chain validation fails.
+//	GOVC_TLS_HANDSHAKE_TIMEOUT           Go duration string bounding the TLS handshake.
 //
 // A misconfigured value (unreadable/invalid CA bundle, bad duration) is returned
 // as a hard error rather than a warning: silently ignoring it would fall back to
 // weaker verification than the operator asked for, which is exactly the footgun
-// this feature exists to remove. Note that when GOVC_INSECURE disables
-// verification, CA_CERTS/KNOWN_HOSTS have no effect (main warns about that).
-func configureTLSFromEnv(sc *soap.Client) error {
-	if caCerts := os.Getenv("GOVC_TLS_CA_CERTS"); caCerts != "" {
+// this feature exists to remove. Note that when insecure mode disables
+// verification, caCerts/knownHosts have no effect (main warns about that).
+func configureTLS(sc *soap.Client, caCerts, knownHosts string) error {
+	if caCerts != "" {
 		if err := sc.SetRootCAs(caCerts); err != nil {
-			return fmt.Errorf("GOVC_TLS_CA_CERTS: cannot load CA bundle(s) %q: %w", caCerts, err)
+			return fmt.Errorf("GOVC_TLS_CA_CERTS/-tls-ca-certs: cannot load CA bundle(s) %q: %w", caCerts, err)
 		}
 	}
 
-	if knownHosts := os.Getenv("GOVC_TLS_KNOWN_HOSTS"); knownHosts != "" {
+	if knownHosts != "" {
 		if err := sc.LoadThumbprints(knownHosts); err != nil {
-			return fmt.Errorf("GOVC_TLS_KNOWN_HOSTS: cannot load thumbprints from %q: %w", knownHosts, err)
+			return fmt.Errorf("GOVC_TLS_KNOWN_HOSTS/-tls-known-hosts: cannot load thumbprints from %q: %w", knownHosts, err)
 		}
 	}
 
@@ -81,26 +95,25 @@ func configureTLSFromEnv(sc *soap.Client) error {
 	return nil
 }
 
-// connectToVC initializes the govmomi client using GOVC_* environment variables.
+// connectToVC initializes the govmomi client from the resolved connection options.
 //
-// TLS verification follows govc's model: with GOVC_INSECURE unset/false the
-// server certificate is validated against the host's system root CA store (Go's
-// crypto/tls default, since soap.NewClient leaves tls.Config.RootCAs nil). The
-// GOVC_TLS_* variables (see configureTLSFromEnv) can override the trust anchors
-// or pin thumbprints.
+// TLS verification follows govc's model: with insecure mode off (GOVC_INSECURE
+// unset/false and -k not passed) the server certificate is validated against the
+// host's system root CA store (Go's crypto/tls default, since soap.NewClient
+// leaves tls.Config.RootCAs nil). The CA-certs / known-hosts options (see
+// configureTLS) can override the trust anchors or pin thumbprints.
 //
 // govmomi.NewClient offers no hook to configure the soap.Client before its first
 // round-trip (vim25.NewClient immediately retrieves ServiceContent), so we
 // replicate its small assembly here to slot TLS configuration in between.
-func connectToVC(ctx context.Context) (*govmomi.Client, error) {
-	vcURL := os.Getenv("GOVC_URL")
-	if vcURL == "" {
-		return nil, fmt.Errorf("GOVC_URL is not set")
+func connectToVC(ctx context.Context, opts connOptions) (*govmomi.Client, error) {
+	if opts.URL == "" {
+		return nil, fmt.Errorf("no vCenter URL: set GOVC_URL or pass -u")
 	}
 
-	u, err := soap.ParseURL(vcURL)
+	u, err := soap.ParseURL(opts.URL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid GOVC_URL format: %w", err)
+		return nil, fmt.Errorf("invalid vCenter URL (GOVC_URL/-u): %w", err)
 	}
 
 	username := os.Getenv("GOVC_USERNAME")
@@ -109,13 +122,11 @@ func connectToVC(ctx context.Context) (*govmomi.Client, error) {
 		u.User = url.UserPassword(username, password)
 	}
 
-	insecure := govcInsecure()
-
 	connCtx, cancel := context.WithTimeout(ctx, vcConnectTimeout)
 	defer cancel()
 
-	soapClient := soap.NewClient(u, insecure)
-	if err := configureTLSFromEnv(soapClient); err != nil {
+	soapClient := soap.NewClient(u, opts.Insecure)
+	if err := configureTLS(soapClient, opts.CACerts, opts.KnownHosts); err != nil {
 		return nil, err
 	}
 

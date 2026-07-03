@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -17,7 +18,7 @@ import (
 	"github.com/vmware/govmomi/vim25/soap"
 )
 
-// newSoapClient returns a throwaway soap.Client for exercising configureTLSFromEnv
+// newSoapClient returns a throwaway soap.Client for exercising configureTLS
 // without touching the network.
 func newSoapClient(t *testing.T) *soap.Client {
 	t.Helper()
@@ -56,63 +57,55 @@ func writePEMCert(t *testing.T) string {
 
 // TestConfigureTLSFromEnv_NoEnv is the default path: no GOVC_TLS_* vars means no
 // custom RootCAs (nil => Go verifies against the system trust store).
-func TestConfigureTLSFromEnv_NoEnv(t *testing.T) {
-	t.Setenv("GOVC_TLS_CA_CERTS", "")
-	t.Setenv("GOVC_TLS_KNOWN_HOSTS", "")
+func TestConfigureTLS_NoInput(t *testing.T) {
 	t.Setenv("GOVC_TLS_HANDSHAKE_TIMEOUT", "")
 
 	sc := newSoapClient(t)
-	if err := configureTLSFromEnv(sc); err != nil {
+	if err := configureTLS(sc, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if pool := sc.DefaultTransport().TLSClientConfig.RootCAs; pool != nil {
-		t.Errorf("RootCAs should stay nil (system roots) when GOVC_TLS_CA_CERTS is unset, got %v", pool)
+		t.Errorf("RootCAs should stay nil (system roots) when no CA bundle is given, got %v", pool)
 	}
 }
 
-func TestConfigureTLSFromEnv_ValidCACerts(t *testing.T) {
-	t.Setenv("GOVC_TLS_CA_CERTS", writePEMCert(t))
-
+func TestConfigureTLS_ValidCACerts(t *testing.T) {
 	sc := newSoapClient(t)
-	if err := configureTLSFromEnv(sc); err != nil {
+	if err := configureTLS(sc, writePEMCert(t), ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if sc.DefaultTransport().TLSClientConfig.RootCAs == nil {
-		t.Error("RootCAs should be populated from GOVC_TLS_CA_CERTS")
+		t.Error("RootCAs should be populated from the CA bundle")
 	}
 }
 
-func TestConfigureTLSFromEnv_MissingCACerts(t *testing.T) {
-	t.Setenv("GOVC_TLS_CA_CERTS", filepath.Join(t.TempDir(), "does-not-exist.pem"))
-
-	err := configureTLSFromEnv(newSoapClient(t))
-	if err == nil || !strings.Contains(err.Error(), "GOVC_TLS_CA_CERTS") {
-		t.Fatalf("expected a GOVC_TLS_CA_CERTS error, got %v", err)
+func TestConfigureTLS_MissingCACerts(t *testing.T) {
+	err := configureTLS(newSoapClient(t), filepath.Join(t.TempDir(), "does-not-exist.pem"), "")
+	if err == nil || !strings.Contains(err.Error(), "tls-ca-certs") {
+		t.Fatalf("expected a CA-certs error, got %v", err)
 	}
 }
 
-func TestConfigureTLSFromEnv_InvalidCACerts(t *testing.T) {
+func TestConfigureTLS_InvalidCACerts(t *testing.T) {
 	bad := filepath.Join(t.TempDir(), "bad.pem")
 	if err := os.WriteFile(bad, []byte("not a certificate"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("GOVC_TLS_CA_CERTS", bad)
 
-	err := configureTLSFromEnv(newSoapClient(t))
-	if err == nil || !strings.Contains(err.Error(), "GOVC_TLS_CA_CERTS") {
-		t.Fatalf("expected a GOVC_TLS_CA_CERTS error for a non-PEM file, got %v", err)
+	err := configureTLS(newSoapClient(t), bad, "")
+	if err == nil || !strings.Contains(err.Error(), "tls-ca-certs") {
+		t.Fatalf("expected a CA-certs error for a non-PEM file, got %v", err)
 	}
 }
 
-func TestConfigureTLSFromEnv_KnownHosts(t *testing.T) {
+func TestConfigureTLS_KnownHosts(t *testing.T) {
 	kh := filepath.Join(t.TempDir(), "known_hosts")
 	if err := os.WriteFile(kh, []byte("vc.example.com AA:BB:CC:DD\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("GOVC_TLS_KNOWN_HOSTS", kh)
 
 	sc := newSoapClient(t)
-	if err := configureTLSFromEnv(sc); err != nil {
+	if err := configureTLS(sc, "", kh); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// soap.Client keys thumbprints by host:port (443 default), matched via Thumbprint.
@@ -121,20 +114,19 @@ func TestConfigureTLSFromEnv_KnownHosts(t *testing.T) {
 	}
 }
 
-// TestConfigureTLSFromEnv_MissingKnownHosts documents govmomi's behavior: a
+// TestConfigureTLS_MissingKnownHosts documents govmomi's behavior: a
 // non-existent known_hosts path is a no-op, not an error.
-func TestConfigureTLSFromEnv_MissingKnownHosts(t *testing.T) {
-	t.Setenv("GOVC_TLS_KNOWN_HOSTS", filepath.Join(t.TempDir(), "missing"))
-	if err := configureTLSFromEnv(newSoapClient(t)); err != nil {
+func TestConfigureTLS_MissingKnownHosts(t *testing.T) {
+	if err := configureTLS(newSoapClient(t), "", filepath.Join(t.TempDir(), "missing")); err != nil {
 		t.Fatalf("missing known_hosts should be a no-op, got %v", err)
 	}
 }
 
-func TestConfigureTLSFromEnv_HandshakeTimeout(t *testing.T) {
+func TestConfigureTLS_HandshakeTimeout(t *testing.T) {
 	t.Setenv("GOVC_TLS_HANDSHAKE_TIMEOUT", "7s")
 
 	sc := newSoapClient(t)
-	if err := configureTLSFromEnv(sc); err != nil {
+	if err := configureTLS(sc, "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got := sc.DefaultTransport().TLSHandshakeTimeout; got != 7*time.Second {
@@ -142,11 +134,22 @@ func TestConfigureTLSFromEnv_HandshakeTimeout(t *testing.T) {
 	}
 }
 
-func TestConfigureTLSFromEnv_InvalidHandshakeTimeout(t *testing.T) {
+func TestConfigureTLS_InvalidHandshakeTimeout(t *testing.T) {
 	t.Setenv("GOVC_TLS_HANDSHAKE_TIMEOUT", "soon")
 
-	err := configureTLSFromEnv(newSoapClient(t))
+	err := configureTLS(newSoapClient(t), "", "")
 	if err == nil || !strings.Contains(err.Error(), "GOVC_TLS_HANDSHAKE_TIMEOUT") {
 		t.Fatalf("expected a GOVC_TLS_HANDSHAKE_TIMEOUT error, got %v", err)
+	}
+}
+
+// TestConnectToVC_NoURL confirms connectToVC is driven by the resolved options,
+// not os.Getenv: an empty URL fails fast even if GOVC_URL is set in the env.
+func TestConnectToVC_NoURL(t *testing.T) {
+	t.Setenv("GOVC_URL", "https://should-be-ignored.invalid")
+
+	_, err := connectToVC(context.Background(), connOptions{URL: ""})
+	if err == nil || !strings.Contains(err.Error(), "-u") {
+		t.Fatalf("expected a missing-URL error mentioning -u, got %v", err)
 	}
 }
