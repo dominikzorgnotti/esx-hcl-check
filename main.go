@@ -27,6 +27,11 @@ func versionString() string {
 // large environments without overwhelming vCenter or the Broadcom API.
 const maxWorkers = 8
 
+// defaultExcludeFile is the -exclude default; a missing file at this path is not
+// worth warning about (exclusions are optional), but an explicitly-set missing
+// or malformed file is.
+const defaultExcludeFile = "exclude.json"
+
 // normalizeWorkers validates the -workers value: it errors below 1 and caps
 // above maxWorkers. The returned value is always within [1, maxWorkers].
 func normalizeWorkers(n int) (int, error) {
@@ -51,7 +56,7 @@ func main() {
 		debugPci    = flag.Bool("debugpci", false, "Bypass PCI filters and dump all raw PCI devices into the JSON file for troubleshooting")
 		vsanBeta    = flag.Bool("vsan", false, "Extract vSAN SSD and NVMe disks and check against the vSAN HCL database")
 		uniqueOut   = flag.Bool("unique", false, "Aggregate and deduplicate output across all hosts globally")
-		excludeFile = flag.String("exclude", "exclude.json", "Path to the exclude JSON file to filter out specific devices")
+		excludeFile = flag.String("exclude", defaultExcludeFile, "Path to the exclude JSON file to filter out specific devices")
 		vsanHclFile = flag.String("vsanhcl", "vsan-offline-hcl.json", "Path to the local vSAN HCL offline JSON database")
 		unsupported = flag.Bool("unsupported", false, "Filter output to ONLY show hardware that is not certified")
 		mismatch    = flag.Bool("mismatch", false, "Filter output to ONLY show hardware that is certified but has a driver/firmware mismatch")
@@ -91,6 +96,12 @@ func main() {
 		ws.add("GOVC_INSECURE is set — TLS certificate verification is DISABLED. The vCenter connection is vulnerable to man-in-the-middle interception; use it only for trusted, self-signed lab environments.")
 	}
 
+	// Soft-validate -release: warn (don't reject) if it doesn't look like a
+	// Broadcom release version, so a typo doesn't silently return all-uncertified.
+	if _, _, _, ok := parseESXiRelease(*esxiRelease); !ok {
+		ws.add(fmt.Sprintf("-release=%q doesn't look like a Broadcom release version (expected e.g. \"ESXi 9.1\" or \"ESXi 8.0 U3\"); results may be empty or all-uncertified.", *esxiRelease))
+	}
+
 	// Validate -workers: reject nonsensical values and enforce the hard maximum.
 	if v, err := normalizeWorkers(*workers); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v.\n", err)
@@ -102,13 +113,26 @@ func main() {
 		*workers = v
 	}
 
-	// Load Exclude Rules
+	// Load Exclude Rules — surface problems instead of silently ignoring them,
+	// so a user whose exclusions "don't work" learns why.
 	var excludeCfg ExcludeConfig
 	if *excludeFile != "" {
-		if b, err := os.ReadFile(*excludeFile); err == nil {
-			if err := json.Unmarshal(b, &excludeCfg); err == nil {
+		b, err := os.ReadFile(*excludeFile)
+		switch {
+		case err != nil:
+			// A missing default file is expected (exclusions are optional); only
+			// warn if the user explicitly pointed at a file we couldn't read.
+			if *excludeFile != defaultExcludeFile {
+				ws.add(fmt.Sprintf("could not read exclude file %q: %v (no exclusions applied)", *excludeFile, err))
+			}
+		default:
+			if err := json.Unmarshal(b, &excludeCfg); err != nil {
+				ws.add(fmt.Sprintf("exclude file %q is not valid JSON: %v (no exclusions applied)", *excludeFile, err))
+			} else {
 				for _, expr := range excludeCfg.RegexNames {
-					if re, err := regexp.Compile(expr); err == nil {
+					if re, err := regexp.Compile(expr); err != nil {
+						ws.add(fmt.Sprintf("invalid regex %q in exclude file %q: %v (this rule is ignored)", expr, *excludeFile, err))
+					} else {
 						excludeCfg.CompiledRegexes = append(excludeCfg.CompiledRegexes, re)
 					}
 				}
