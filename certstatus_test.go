@@ -33,15 +33,15 @@ func TestCertStatusStringAndMarshal(t *testing.T) {
 
 func TestCertStatusUnmarshal(t *testing.T) {
 	cases := map[string]CertStatus{
-		`"TRUE"`:  CertTrue,
-		`"FALSE"`: CertFalse,
-		`"N/A"`:   CertNA,
+		`"TRUE"`:    CertTrue,
+		`"FALSE"`:   CertFalse,
+		`"N/A"`:     CertNA,
 		`"ERROR"`:   CertError,
 		`"SKIPPED"`: CertSkipped,
-		`"true"`:  CertTrue,  // case-insensitive
-		`"weird"`: CertNA,    // unknown token -> N/A
-		`""`:      CertNA,    // empty -> N/A
-		`null`:    CertNA,    // null -> N/A
+		`"true"`:    CertTrue, // case-insensitive
+		`"weird"`:   CertNA,   // unknown token -> N/A
+		`""`:        CertNA,   // empty -> N/A
+		`null`:      CertNA,   // null -> N/A
 	}
 	for in, want := range cases {
 		var got CertStatus

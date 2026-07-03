@@ -135,30 +135,30 @@ type VsanOfflineDB struct {
 
 type MissingDetail struct {
 	Hostname string   `json:"hostname,omitempty"`
-	Device  string   `json:"device"`
-	Missing []string `json:"missing"`
-	Reason  string   `json:"reason,omitempty"`
+	Device   string   `json:"device"`
+	Missing  []string `json:"missing"`
+	Reason   string   `json:"reason,omitempty"`
 }
 
 // --- Structs for Phase 2: HCL Verification ---
 
 type HCLResult struct {
-	Device             string   `json:"device"`
-	DeviceType         string   `json:"device_type"`
-	Instances          int      `json:"number_of_instances"`
-	Firmware           string   `json:"current_firmware"`
-	DriverVer          string   `json:"current_driver_version"`
-	DriverName         string   `json:"driver_name"`
-	Certified          CertStatus `json:"hw_certified"`
-	DriverCertified    CertStatus `json:"driver_certified"`
-	FirmwareCertified  CertStatus `json:"firmware_certified"`
+	Device            string     `json:"device"`
+	DeviceType        string     `json:"device_type"`
+	Instances         int        `json:"number_of_instances"`
+	Firmware          string     `json:"current_firmware"`
+	DriverVer         string     `json:"current_driver_version"`
+	DriverName        string     `json:"driver_name"`
+	Certified         CertStatus `json:"hw_certified"`
+	DriverCertified   CertStatus `json:"driver_certified"`
+	FirmwareCertified CertStatus `json:"firmware_certified"`
 	// MaxSupportedRelease is the highest ESXi release this device is certified
 	// under in the vSAN offline HCL (e.g. "ESXi 9.0"), useful when it is not
 	// certified for the target release. Empty when only the live API was used.
 	MaxSupportedRelease string   `json:"max_supported_release,omitempty"`
-	SupportedDrivers   []string `json:"supported_drivers,omitempty"`
-	SupportedFirmwares []string `json:"supported_firmwares,omitempty"`
-	HCLLink            string   `json:"hcl"`
+	SupportedDrivers    []string `json:"supported_drivers,omitempty"`
+	SupportedFirmwares  []string `json:"supported_firmwares,omitempty"`
+	HCLLink             string   `json:"hcl"`
 
 	// Detailed hardware IDs
 	VID   string `json:"vid,omitempty"`
