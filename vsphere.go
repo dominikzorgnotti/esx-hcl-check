@@ -296,7 +296,7 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 	pciPnics := make(map[string]types.PhysicalNic)
 	hbaKeyToPci := make(map[string]string)
 	hbaDevToPci := make(map[string]string)
-	nvmeDriverName := make(map[string]string) // pci_id -> driverName (HostHostBusAdapter.DriverName)
+	nvmeDriverName := make(map[string]string) // pci_id -> driverName (HostHostBusAdapter.Driver)
 
 	if hostMo.Config != nil {
 		if hostMo.Config.Network != nil {
@@ -609,6 +609,12 @@ func getHBAFirmwareViaSoap(ctx context.Context, client *govmomi.Client, hostRef 
 	sc := client.Client.Client // *soap.Client (embedded in vim25.Client)
 	sdkURL := sc.URL()
 
+	// Defense-in-depth: escape the MoRef before interpolating it into the SOAP
+	// body. hostRef.Value comes from govmomi (not user input), so this is safe
+	// today, but escaping removes an XML-injection footgun if the source changes.
+	var moref bytes.Buffer
+	_ = xml.EscapeText(&moref, []byte(hostRef.Value))
+
 	soapBody := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:vim25="urn:vim25">
   <soapenv:Body>
@@ -626,7 +632,7 @@ func getHBAFirmwareViaSoap(ctx context.Context, client *govmomi.Client, hostRef 
       <vim25:options/>
     </vim25:RetrievePropertiesEx>
   </soapenv:Body>
-</soapenv:Envelope>`, hostRef.Value)
+</soapenv:Envelope>`, moref.String())
 
 	req, err := http.NewRequestWithContext(ctx, "POST", sdkURL.String(), strings.NewReader(soapBody))
 	if err != nil {
