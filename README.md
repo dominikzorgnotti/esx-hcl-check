@@ -77,6 +77,20 @@ Once your variables are set, run the tool with the mandatory release parameter:
 ./esx-hcl-check -release="ESXi 9.1"
 ```
 
+### TLS certificate handling
+
+By default (`GOVC_INSECURE` unset or `0`) the vCenter certificate is verified against your host's **system root CA store**. Setting `GOVC_INSECURE=1` disables verification entirely — the connection then trusts any certificate and is vulnerable to man-in-the-middle interception, so use it only for trusted, self-signed lab environments.
+
+For everything short of disabling verification, the same `govc` TLS variables are honored:
+
+| Variable | Purpose |
+| ----- | ----- |
+| `GOVC_TLS_CA_CERTS` | Path(s) to PEM CA bundle(s) to trust **instead of** the system roots. Separate multiple paths with the OS path-list separator (`:` on Linux/macOS, `;` on Windows). |
+| `GOVC_TLS_KNOWN_HOSTS` | Path to a `known_hosts`-style file of `host thumbprint` entries, used as a fallback when normal chain verification fails (thumbprint pinning). |
+| `GOVC_TLS_HANDSHAKE_TIMEOUT` | Go duration string (e.g. `10s`) bounding the TLS handshake. |
+
+A missing/invalid CA bundle or an unparseable timeout is a hard error rather than a silent fallback to weaker verification. When `GOVC_INSECURE=1` is set, `GOVC_TLS_CA_CERTS` and `GOVC_TLS_KNOWN_HOSTS` have no effect (verification is off) and the tool warns you.
+
 ## **⚙️ Command Line Parameters**
 
 | Flag | Description | Default |
