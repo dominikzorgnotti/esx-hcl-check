@@ -2,14 +2,63 @@ package main
 
 import (
 	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 )
+
+var csvHeader = []string{
+	"source", "datacenter", "cluster", "hostname", "skip_reason",
+	"device", "device_type", "number_of_instances",
+	"current_firmware", "current_driver_version", "driver_name",
+	"hw_certified", "driver_certified", "firmware_certified",
+	"max_supported_release", "supported_drivers", "supported_firmwares",
+	"vid", "did", "svid", "ssid", "cpu_id", "hcl",
+}
+
+// csvRows builds the CSV as a header plus one row per device. A skipped
+// host/cluster (no results) becomes a context-only row so it is not lost.
+// Extracted from printCSV so the row/column mapping is unit-testable.
+func csvRows(data []HostComponents) [][]string {
+	rows := [][]string{csvHeader}
+	for _, host := range data {
+		if len(host.Results) == 0 {
+			if host.SkipReason != "" {
+				row := make([]string, len(csvHeader))
+				row[0], row[1], row[2], row[3], row[4] = host.Source, host.Datacenter, host.Cluster, host.Hostname, host.SkipReason
+				rows = append(rows, row)
+			}
+			continue
+		}
+		for _, r := range host.Results {
+			rows = append(rows, []string{
+				host.Source, host.Datacenter, host.Cluster, host.Hostname, host.SkipReason,
+				r.Device, r.DeviceType, strconv.Itoa(r.Instances),
+				r.Firmware, r.DriverVer, r.DriverName,
+				r.Certified.String(), r.DriverCertified.String(), r.FirmwareCertified.String(),
+				r.MaxSupportedRelease, strings.Join(r.SupportedDrivers, ";"), strings.Join(r.SupportedFirmwares, ";"),
+				r.VID, r.DID, r.SVID, r.SSID, r.CPUID, r.HCLLink,
+			})
+		}
+	}
+	return rows
+}
+
+// printCSV writes one row per device to stdout — the same content as the JSON
+// results, flattened for spreadsheets.
+func printCSV(data []HostComponents) {
+	w := csv.NewWriter(os.Stdout)
+	_ = w.WriteAll(csvRows(data))
+	if err := w.Error(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing CSV: %v\n", err)
+	}
+}
 
 // computeInventoryStats tallies the collected raw inventory: how many
 // datacenters, clusters, hosts, IO cards, and storage devices were seen. It

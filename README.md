@@ -91,7 +91,8 @@ Once your variables are set, run the tool with the mandatory release parameter:
 | `-unsupported` | Filters the output to ONLY show hardware components that are NOT certified. | `false` |
 | `-mismatch` | Filters the output to ONLY show certified hardware that has an unsupported Firmware or Driver installed. | `false` |
 | `-json` | Outputs the final HCL evaluation results as a JSON payload instead of a text table. | `false` |
-| `-details` | Includes raw hardware identifiers (VID, DID, SVID, SSID) and supported firmware/driver arrays in the JSON. *Auto-enables -json*. | `false` |
+| `-csv` | Outputs the results as CSV (one row per device) to stdout, with the same detail as `-json`. Redirect with `> report.csv`. Takes precedence over `-json`. | `false` |
+| `-details` | Includes raw hardware identifiers (VID, DID, SVID, SSID) in the output. Auto-enables `-json` (unless `-csv` is set, giving a detailed CSV). | `false` |
 | `-vsan` | Extracts vSAN SSDs and NVMe drives and checks them against the vSAN HCL database. | `false` |
 | `-quiet` | Suppresses the Issues section that lists devices for which firmware/driver information could not be retrieved. | `false` |
 | `-workers` | How many hosts to collect from at once. **`1` runs fully sequentially** (one host at a time); higher values collect that many hosts in parallel. Valid range is `1`–`8` (hard maximum `8`): values above `8` are capped, and values below `1` are rejected. Use `1` in constrained or rate-sensitive environments. | `4` |
@@ -121,7 +122,13 @@ Once your variables are set, run the tool with the mandatory release parameter:
 ./esx-hcl-check -release="ESXi 9.1" -unique -json -details -vsan
 ```
 
-**4. Gate an upgrade in CI/CD (the exit code drives the pipeline):**
+**4. Export a spreadsheet for Excel / asset management:**
+
+```
+./esx-hcl-check -release="ESXi 9.1" -unique -vsan -details -csv > hcl-report.csv
+```
+
+**5. Gate an upgrade in CI/CD (the exit code drives the pipeline):**
 
 ```bash
 ./esx-hcl-check -release="ESXi 9.1" -unique -json > report.json
