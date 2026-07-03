@@ -22,9 +22,12 @@ jobs:
     steps:
       - id: ldflags
         run: |
+          # NOTE: evaluated-envs is parsed as comma-separated KEY:value pairs, so
+          # a value must not contain ':' — use a colon-free basic-ISO timestamp
+          # for the date (e.g. 20260703T065558Z) or the builder rejects it.
           echo "version=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
           echo "commit=$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
-          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H%M%SZ)" >> "$GITHUB_OUTPUT"
 
   # One trusted build + provenance per platform, uploaded to the release.
   build:
