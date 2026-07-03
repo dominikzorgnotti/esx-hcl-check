@@ -152,6 +152,10 @@ type HCLResult struct {
 	Certified          CertStatus `json:"hw_certified"`
 	DriverCertified    CertStatus `json:"driver_certified"`
 	FirmwareCertified  CertStatus `json:"firmware_certified"`
+	// MaxSupportedRelease is the highest ESXi release this device is certified
+	// under in the vSAN offline HCL (e.g. "ESXi 9.0"), useful when it is not
+	// certified for the target release. Empty when only the live API was used.
+	MaxSupportedRelease string   `json:"max_supported_release,omitempty"`
 	SupportedDrivers   []string `json:"supported_drivers,omitempty"`
 	SupportedFirmwares []string `json:"supported_firmwares,omitempty"`
 	HCLLink            string   `json:"hcl"`
