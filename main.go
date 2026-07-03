@@ -59,6 +59,7 @@ func main() {
 		workers     = flag.Int("workers", 4, "How many hosts to collect from at once (1-8). 1 = sequential, one host at a time; higher = that many in parallel")
 		statsFlag   = flag.Bool("stats", false, "Emit run statistics (inventory counts and query timings) as a 'stats' block/key")
 		offline     = flag.Bool("offline", false, "Run without internet: skip all Broadcom Compatibility Guide API checks (marked SKIPPED) and use only the local vSAN HCL database")
+		csvOut      = flag.Bool("csv", false, "Output results as CSV (one row per device) to stdout, with the same detail as -json")
 		showVersion = flag.Bool("version", false, "Print version information and exit")
 	)
 	flag.Parse()
@@ -74,14 +75,17 @@ func main() {
 		os.Exit(2)
 	}
 
-	if *detailsOut {
+	// -details implies detailed output; it selects JSON unless CSV was requested
+	// (so -csv -details produces a detailed CSV rather than switching to JSON).
+	if *detailsOut && !*csvOut {
 		*jsonOutput = true
 	}
 
-	// warnings are routed by output mode: to stderr in text mode (visible during
-	// the run), or into the JSON payload's "warnings" key in JSON mode (so stdout
-	// stays a single valid JSON document for CI/CD).
-	ws := &warnSink{json: *jsonOutput}
+	// warnings are routed by output mode: to stderr in text/CSV mode (visible
+	// during the run, and kept off the CSV/text stdout), or into the JSON
+	// payload's "warnings" key in JSON mode (so stdout stays a single valid JSON
+	// document for CI/CD). CSV takes precedence over JSON for output.
+	ws := &warnSink{json: *jsonOutput && !*csvOut}
 
 	// Validate -workers: reject nonsensical values and enforce the hard maximum.
 	if v, err := normalizeWorkers(*workers); err != nil {
@@ -175,13 +179,15 @@ func main() {
 	}
 
 	if *noHCL {
-		// No HCL phase; still surface stats (inventory + vCenter timing) if asked.
-		if statsOut != nil {
-			if *jsonOutput {
-				printJSON([]HostComponents{}, ws.messages, statsOut, *quiet)
-			} else {
-				printStatsText(statsOut)
-			}
+		// No HCL phase; nothing to certify. Emit an empty CSV (header only) or
+		// surface stats (inventory + vCenter timing) if asked.
+		switch {
+		case *csvOut:
+			printCSV(nil)
+		case statsOut != nil && *jsonOutput:
+			printJSON([]HostComponents{}, ws.messages, statsOut, *quiet)
+		case statsOut != nil:
+			printStatsText(statsOut)
 		}
 		return
 	}
@@ -203,11 +209,14 @@ func main() {
 	hclResults = applyFilters(hclResults, *unsupported, *mismatch)
 
 	// ---------------------------------------------------------
-	// PHASE 3: Output Formatting
+	// PHASE 3: Output Formatting (CSV > JSON > text)
 	// ---------------------------------------------------------
-	if *jsonOutput {
+	switch {
+	case *csvOut:
+		printCSV(hclResults)
+	case *jsonOutput:
 		printJSON(hclResults, ws.messages, statsOut, *quiet)
-	} else {
+	default:
 		printText(hclResults, statsOut, *quiet)
 	}
 
