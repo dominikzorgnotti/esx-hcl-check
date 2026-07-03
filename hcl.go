@@ -551,10 +551,17 @@ func maxSupportedRelease(releases map[string]interface{}) string {
 }
 
 func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, res *HCLResult) bool {
-	// Search controller, NIC, and SSD entries by PCI IDs.
-	// NVMe PCIe SSDs can appear in the SSD category in the offline HCL.
-	// Entries without vid/did fields simply won't match.
-	checkList := append(append(db.Data.Controller, db.Data.Nic...), db.Data.Ssd...)
+	// Search the controller and SSD categories by PCI ID (NVMe PCIe SSDs can
+	// appear under SSD). Entries without vid/did fields simply won't match.
+	//
+	// The vSAN "nic" category is deliberately excluded: it is the vSAN RDMA NIC
+	// HCL (program=rdmanic), a separate and more restrictive list than the
+	// general I/O device HCL. Matching a general NIC against it produced false
+	// negatives — e.g. an Intel E810-C reported as only "ESXi 7.0 U3" when the
+	// I/O device HCL certifies it through ESXi 9.1. NICs therefore fall through
+	// to the live Broadcom I/O device API (program=io) instead. Building a fresh
+	// slice also avoids aliasing db.Data.Controller's backing array.
+	checkList := append(append([]map[string]interface{}{}, db.Data.Controller...), db.Data.Ssd...)
 
 	for _, item := range checkList {
 		if strings.EqualFold(fmt.Sprintf("%v", item["vid"]), vid) &&
