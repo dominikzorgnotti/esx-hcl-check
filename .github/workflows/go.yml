@@ -31,6 +31,9 @@ jobs:
       uses: golangci/golangci-lint-action@v6
       with:
         version: v1.64.8
+        # Compile golangci-lint with the CI's Go toolchain: the prebuilt binary
+        # is built with an older Go and refuses to analyze this go 1.26 module.
+        install-mode: goinstall
 
   build:
     runs-on: ubuntu-latest
