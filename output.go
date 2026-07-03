@@ -169,7 +169,9 @@ func saveRawInventory(data []RawHostData, targetPath string) (string, error) {
 		}
 		filePath = f.Name()
 		defer f.Close()
-		f.Write(b)
+		if _, err := f.Write(b); err != nil {
+			return "", fmt.Errorf("failed to write inventory to %s: %w", filePath, err)
+		}
 	} else {
 		if err := writeFileAtomic(filePath, b, 0644); err != nil {
 			return "", fmt.Errorf("failed to write inventory to %s: %w", filePath, err)

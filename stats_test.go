@@ -31,7 +31,7 @@ func TestJSONOutputStatsPlacement(t *testing.T) {
 	without := buildJSONOutput([]HostComponents{{Hostname: "esx-01"}}, nil, nil, true)
 	b2, _ := json.Marshal(without)
 	var m2 map[string]json.RawMessage
-	json.Unmarshal(b2, &m2)
+	_ = json.Unmarshal(b2, &m2)
 	if _, ok := m2["stats"]; ok {
 		t.Error("did not expect 'stats' key when stats is nil")
 	}
