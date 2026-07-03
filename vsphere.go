@@ -369,9 +369,9 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 		for _, feat := range hostMo.Hardware.CpuFeature {
 			if feat.Level == 1 {
 				cleanEax := strings.ReplaceAll(feat.Eax, ":", "")
-				cleanEax = strings.ReplaceAll(cleanEax, "-", "0") 
-				cleanEax = strings.ReplaceAll(cleanEax, "x", "0") 
-				
+				cleanEax = strings.ReplaceAll(cleanEax, "-", "0")
+				cleanEax = strings.ReplaceAll(cleanEax, "x", "0")
+
 				if val, err := strconv.ParseUint(cleanEax, 2, 32); err == nil {
 					raw.CpuId = fmt.Sprintf("0x%08x", val)
 				}
@@ -381,7 +381,7 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 
 		for _, pciDev := range hostMo.Hardware.PciDevice {
 			devName := pciDev.DeviceName
-			
+
 			// Extract lowercase hex strings for ID comparison
 			vidHex := fmt.Sprintf("%04x", uint16(pciDev.VendorId))
 			didHex := fmt.Sprintf("%04x", uint16(pciDev.DeviceId))
@@ -389,7 +389,7 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 			ssidHex := fmt.Sprintf("%04x", uint16(pciDev.SubDeviceId))
 
 			excluded := false
-			
+
 			// 1. Exact Name match exclusion
 			for _, name := range excludeCfg.Names {
 				if strings.EqualFold(strings.TrimSpace(devName), name) {
@@ -397,7 +397,7 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 					break
 				}
 			}
-			
+
 			// 2. Regex match exclusion
 			if !excluded {
 				for _, re := range excludeCfg.CompiledRegexes {
@@ -407,15 +407,23 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 					}
 				}
 			}
-			
+
 			// 3. ID match exclusion
 			if !excluded {
 				for _, id := range excludeCfg.IDs {
 					match := true
-					if id.VID != "" && !strings.EqualFold(id.VID, vidHex) { match = false }
-					if id.DID != "" && !strings.EqualFold(id.DID, didHex) { match = false }
-					if id.SVID != "" && !strings.EqualFold(id.SVID, svidHex) { match = false }
-					if id.SSID != "" && !strings.EqualFold(id.SSID, ssidHex) { match = false }
+					if id.VID != "" && !strings.EqualFold(id.VID, vidHex) {
+						match = false
+					}
+					if id.DID != "" && !strings.EqualFold(id.DID, didHex) {
+						match = false
+					}
+					if id.SVID != "" && !strings.EqualFold(id.SVID, svidHex) {
+						match = false
+					}
+					if id.SSID != "" && !strings.EqualFold(id.SSID, ssidHex) {
+						match = false
+					}
 
 					// If the block successfully matched at least one provided ID constraint
 					if match && (id.VID != "" || id.DID != "" || id.SVID != "" || id.SSID != "") {

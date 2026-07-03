@@ -77,6 +77,7 @@ func (c *queryCache) getWith(query func(string, []map[string]interface{}, []stri
 const (
 	vsanHCLURL           = "https://vvs.broadcom.com/service/vsan/all.json"
 	broadcomGuideBaseURL = "https://compatibilityguide.broadcom.com"
+	broadcomAPIURL       = "https://compatibilityguide.broadcom.com/compguide/programs/viewResults?limit=20&page=1&sortBy=&sortType=ASC"
 )
 
 // broadcomHTTPClient bounds all outbound Broadcom HCL calls (vSAN DB download and
@@ -231,14 +232,18 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 
 		// 2. CPU (API-only: no local DB, so offline -> SKIPPED)
 		cpuRes := buildCPUQuery(raw.CpuModel, raw.CpuId, releaseVersion)
-		if details && raw.CpuId != "" { cpuRes.CPUID = raw.CpuId }
+		if details && raw.CpuId != "" {
+			cpuRes.CPUID = raw.CpuId
+		}
 		cpuRes.DriverCertified = CertNA
 		cpuRes.FirmwareCertified = CertNA
 		if offline {
 			cpuRes.Certified = CertSkipped
 		} else {
 			cpuKeyword := raw.CpuModel
-			if raw.CpuId != "" { cpuKeyword = raw.CpuId }
+			if raw.CpuId != "" {
+				cpuKeyword = raw.CpuId
+			}
 			cpuFilters := []map[string]interface{}{{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}}}
 			cpuRes.Certified = qc.get("cpu", cpuFilters, []string{cpuKeyword}, releaseVersion)
 		}
@@ -263,13 +268,13 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 				ssidHex := fmt.Sprintf("%04x", uint16(pci.SSID))
 
 				res := HCLResult{
-					Device:     pci.DeviceName,
-					DeviceType: pci.DeviceType,
-					Instances:  1,
-					Firmware:   pci.Firmware,
-					DriverVer:  pci.DriverVer,
-					DriverName: pci.DriverName,
-					DriverCertified: CertNA,
+					Device:            pci.DeviceName,
+					DeviceType:        pci.DeviceType,
+					Instances:         1,
+					Firmware:          pci.Firmware,
+					DriverVer:         pci.DriverVer,
+					DriverName:        pci.DriverName,
+					DriverCertified:   CertNA,
 					FirmwareCertified: CertNA,
 				}
 
@@ -442,7 +447,7 @@ func loadVsanHCL(path string, offline bool, ws *warnSink) (*VsanOfflineDB, error
 		if err == nil {
 			var db VsanOfflineDB
 			if err := json.Unmarshal(b, &db); err == nil {
-				if time.Now().Unix() - db.Timestamp > 86400 {
+				if time.Now().Unix()-db.Timestamp > 86400 {
 					needsDownload = true
 				}
 			} else {
@@ -573,14 +578,18 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 			res.Certified = CertFalse
 
 			releases, ok := item["releases"].(map[string]interface{})
-			if !ok { return true }
+			if !ok {
+				return true
+			}
 
 			// The device is in the DB — record the newest release it supports,
 			// which is the actionable answer when the target release is not.
 			res.MaxSupportedRelease = maxSupportedRelease(releases)
 
 			relData, exists := releases[release]
-			if !exists { return true }
+			if !exists {
+				return true
+			}
 
 			res.Certified = CertTrue
 			cleanHostDrvVer := strings.TrimSpace(res.DriverVer)
@@ -588,13 +597,21 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 
 			if relMap, ok := relData.(map[string]interface{}); ok {
 				// Controller/NIC-style releases: keyed by driver name → version → {firmwares:[…]}
-				if res.DriverName != "" && res.DriverVer != "" { res.DriverCertified = CertFalse }
-				if res.Firmware != "" { res.FirmwareCertified = CertFalse }
+				if res.DriverName != "" && res.DriverVer != "" {
+					res.DriverCertified = CertFalse
+				}
+				if res.Firmware != "" {
+					res.FirmwareCertified = CertFalse
+				}
 
 				for drvName, drvObj := range relMap {
-					if drvName == "vsanSupport" || drvName == "deviceSupport" { continue }
+					if drvName == "vsanSupport" || drvName == "deviceSupport" {
+						continue
+					}
 					drvVersions, ok := drvObj.(map[string]interface{})
-					if !ok { continue }
+					if !ok {
+						continue
+					}
 					for drvVer, drvDetails := range drvVersions {
 						res.SupportedDrivers = append(res.SupportedDrivers, fmt.Sprintf("%s %s", drvName, drvVer))
 						hclBaseDrvVer := strings.Split(drvVer, "-")[0]
@@ -624,7 +641,9 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 				}
 			} else if relArr, ok := relData.([]interface{}); ok {
 				// SSD/HDD-style releases: [{firmware: "…"}, …] — no driver arrays
-				if res.Firmware != "" { res.FirmwareCertified = CertFalse }
+				if res.Firmware != "" {
+					res.FirmwareCertified = CertFalse
+				}
 				for _, fwItem := range relArr {
 					if fwMap, ok := fwItem.(map[string]interface{}); ok {
 						fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwMap["firmware"]))
@@ -699,16 +718,22 @@ func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCL
 			res.Certified = CertFalse
 
 			releases, ok := item["releases"].(map[string]interface{})
-			if !ok { return true }
+			if !ok {
+				return true
+			}
 
 			// The device is in the DB — record the newest release it supports.
 			res.MaxSupportedRelease = maxSupportedRelease(releases)
 
 			relData, exists := releases[release]
-			if !exists { return true }
+			if !exists {
+				return true
+			}
 
 			res.Certified = CertTrue
-			if res.Firmware != "" { res.FirmwareCertified = CertFalse }
+			if res.Firmware != "" {
+				res.FirmwareCertified = CertFalse
+			}
 			cleanHostFw := strings.TrimSpace(res.Firmware)
 
 			if fwList, ok := relData.([]interface{}); ok {
@@ -718,7 +743,10 @@ func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCL
 						fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwMap["firmware"]))
 						existsInList := false
 						for _, existingFw := range res.SupportedFirmwares {
-							if existingFw == fwStr { existsInList = true; break }
+							if existingFw == fwStr {
+								existsInList = true
+								break
+							}
 						}
 						if !existsInList {
 							res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
@@ -732,11 +760,17 @@ func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCL
 				// NVMe SSD-style: same map structure as controller entries
 				// (NVMe SSDs in data.ssd use driverName → version → {firmwares:[…]})
 				cleanHostDrvVer := strings.TrimSpace(res.DriverVer)
-				if res.DriverName != "" && res.DriverVer != "" { res.DriverCertified = CertFalse }
+				if res.DriverName != "" && res.DriverVer != "" {
+					res.DriverCertified = CertFalse
+				}
 				for drvName, drvObj := range relMap {
-					if drvName == "vsanSupport" || drvName == "deviceSupport" { continue }
+					if drvName == "vsanSupport" || drvName == "deviceSupport" {
+						continue
+					}
 					drvVersions, ok := drvObj.(map[string]interface{})
-					if !ok { continue }
+					if !ok {
+						continue
+					}
 					for drvVer, drvDetails := range drvVersions {
 						res.SupportedDrivers = append(res.SupportedDrivers, fmt.Sprintf("%s %s", drvName, drvVer))
 						hclBaseDrvVer := strings.Split(drvVer, "-")[0]
@@ -754,7 +788,10 @@ func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCL
 										fwStr := strings.TrimSpace(fmt.Sprintf("%v", fwMap["firmware"]))
 										existsInList := false
 										for _, existingFw := range res.SupportedFirmwares {
-											if existingFw == fwStr { existsInList = true; break }
+											if existingFw == fwStr {
+												existsInList = true
+												break
+											}
 										}
 										if !existsInList {
 											res.SupportedFirmwares = append(res.SupportedFirmwares, fwStr)
@@ -795,16 +832,17 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 	}
 
 	jsonData, _ := json.Marshal(reqBody)
-	urlStr := "https://compatibilityguide.broadcom.com/compguide/programs/viewResults?limit=20&page=1&sortBy=&sortType=ASC"
 	resp, err := doBroadcomWithRetry(func() (*http.Request, error) {
-		r, e := http.NewRequest("POST", urlStr, bytes.NewReader(jsonData))
+		r, e := http.NewRequest("POST", broadcomAPIURL, bytes.NewReader(jsonData))
 		if e == nil {
 			r.Header.Set("Content-Type", "application/json")
 		}
 		return r, e
 	})
 	if err != nil || resp.StatusCode != 200 {
-		if resp != nil { resp.Body.Close() }
+		if resp != nil {
+			resp.Body.Close()
+		}
 		return CertError
 	}
 	defer resp.Body.Close()
@@ -814,18 +852,26 @@ func queryBroadcomAPI(programId string, filters []map[string]interface{}, keywor
 	json.Unmarshal(bodyBytes, &result)
 
 	data, ok := result["data"].(map[string]interface{})
-	if !ok { return CertError }
+	if !ok {
+		return CertError
+	}
 
 	countFloat, ok := data["count"].(float64)
-	if !ok || countFloat == 0 { return CertFalse }
+	if !ok || countFloat == 0 {
+		return CertFalse
+	}
 
 	bodyStr := string(bodyBytes)
-	if strings.Contains(bodyStr, targetRelease) { return CertTrue }
+	if strings.Contains(bodyStr, targetRelease) {
+		return CertTrue
+	}
 
 	if programId == "vsan" && !strings.Contains(targetRelease, "vSAN") {
 		vsanVer := strings.Replace(targetRelease, "ESXi", "vSAN", 1)
 		vsanTarget := fmt.Sprintf("%s (%s)", targetRelease, vsanVer)
-		if strings.Contains(bodyStr, vsanTarget) { return CertTrue }
+		if strings.Contains(bodyStr, vsanTarget) {
+			return CertTrue
+		}
 	}
 
 	return CertFalse
@@ -934,7 +980,9 @@ func buildCPUQuery(cpuModel, cpuId, releaseVersion string) HCLResult {
 	params.Set("column", "cpuSeries")
 	params.Set("order", "asc")
 	keyword := cpuModel
-	if cpuId != "" { keyword = cpuId }
+	if cpuId != "" {
+		keyword = cpuId
+	}
 	params.Set("keyword", keyword)
 	u.RawQuery = params.Encode()
 	return HCLResult{Device: cpuModel, DeviceType: "CPU", Instances: 1, HCLLink: u.String()}

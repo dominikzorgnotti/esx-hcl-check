@@ -172,7 +172,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error connecting to vCenter: %v\n", err)
 		os.Exit(2)
 	}
-	
+
 	if !*jsonOutput {
 		fmt.Fprintf(os.Stderr, "# Connecting to %s ...\n", client.Client.URL().Host)
 		fmt.Fprintln(os.Stderr, "# Collecting inventory and hardware data...")

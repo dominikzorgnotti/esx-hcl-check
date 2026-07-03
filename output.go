@@ -154,11 +154,11 @@ func saveRawInventory(data []RawHostData, targetPath string) (string, error) {
 	enc := json.NewEncoder(&buf)
 	enc.SetIndent("", "  ")
 	enc.SetEscapeHTML(false)
-	
+
 	if err := enc.Encode(data); err != nil {
 		return "", fmt.Errorf("failed to marshal raw data: %w", err)
 	}
-	
+
 	b := buf.Bytes()
 
 	filePath := targetPath
