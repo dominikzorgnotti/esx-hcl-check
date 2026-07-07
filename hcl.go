@@ -597,7 +597,10 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 
 			if relMap, ok := relData.(map[string]interface{}); ok {
 				// Controller/NIC-style releases: keyed by driver name → version → {firmwares:[…]}
-				if res.DriverName != "" && res.DriverVer != "" {
+				// We can judge driver certification whenever the host reports a driver
+				// version, even if the host did not report a driver *name* — some HBAs
+				// (e.g. RAID controllers) expose driverVersion but no module name.
+				if cleanHostDrvVer != "" {
 					res.DriverCertified = CertFalse
 				}
 				if res.Firmware != "" {
@@ -615,7 +618,12 @@ func evaluateVsanPCI(db *VsanOfflineDB, vid, did, svid, ssid, release string, re
 					for drvVer, drvDetails := range drvVersions {
 						res.SupportedDrivers = append(res.SupportedDrivers, fmt.Sprintf("%s %s", drvName, drvVer))
 						hclBaseDrvVer := strings.Split(drvVer, "-")[0]
-						if strings.Contains(strings.ToLower(res.DriverName), strings.ToLower(drvName)) {
+						// When the host reports a driver name, require it to match the
+						// HCL module name. When it doesn't, fall back to matching on the
+						// version alone against this already-PCI-matched device's drivers.
+						nameMatches := res.DriverName == "" ||
+							strings.Contains(strings.ToLower(res.DriverName), strings.ToLower(drvName))
+						if nameMatches && cleanHostDrvVer != "" {
 							// Prefix match handles build-qualifier suffixes: installed
 							// "1.4.0.8-1vmw.910.0.25370933" matches HCL "1.4.0.8-1vmw.910".
 							if strings.EqualFold(cleanHostDrvVer, drvVer) ||
@@ -760,7 +768,7 @@ func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCL
 				// NVMe SSD-style: same map structure as controller entries
 				// (NVMe SSDs in data.ssd use driverName → version → {firmwares:[…]})
 				cleanHostDrvVer := strings.TrimSpace(res.DriverVer)
-				if res.DriverName != "" && res.DriverVer != "" {
+				if cleanHostDrvVer != "" {
 					res.DriverCertified = CertFalse
 				}
 				for drvName, drvObj := range relMap {
@@ -774,7 +782,11 @@ func evaluateVsanDisk(db *VsanOfflineDB, vendor, model, release string, res *HCL
 					for drvVer, drvDetails := range drvVersions {
 						res.SupportedDrivers = append(res.SupportedDrivers, fmt.Sprintf("%s %s", drvName, drvVer))
 						hclBaseDrvVer := strings.Split(drvVer, "-")[0]
-						if strings.Contains(strings.ToLower(res.DriverName), strings.ToLower(drvName)) {
+						// See the controller block above: match on name when the host
+						// reports one, otherwise fall back to version-only matching.
+						nameMatches := res.DriverName == "" ||
+							strings.Contains(strings.ToLower(res.DriverName), strings.ToLower(drvName))
+						if nameMatches && cleanHostDrvVer != "" {
 							if strings.EqualFold(cleanHostDrvVer, drvVer) ||
 								strings.EqualFold(cleanHostDrvVer, hclBaseDrvVer) ||
 								strings.HasPrefix(strings.ToLower(cleanHostDrvVer), strings.ToLower(drvVer)) {
