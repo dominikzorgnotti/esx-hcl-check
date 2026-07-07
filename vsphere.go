@@ -440,7 +440,7 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 
 	// vSphere 9.1+ exposes firmwareVersion/driverVersion on HostHostBusAdapter natively,
 	// but govmomi does not yet model those fields. Retrieve them via a raw SOAP call.
-	var hba91Firmware map[string]struct{ Firmware, Driver string }
+	var hba91Firmware map[string]struct{ Firmware, Driver, DriverName string }
 	if isAPIVersionAtLeast(apiVersion, "9.1") {
 		hba91Firmware, _ = getHBAFirmwareViaSoap(ctx, client, hostRef)
 	}
@@ -526,6 +526,7 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 			} else if info, ok := hba91Firmware[pciDev.Id]; ok {
 				fw = info.Firmware
 				dv = info.Driver
+				dn = info.DriverName
 			}
 
 			if devType == "nvme-disk" {
@@ -688,8 +689,8 @@ func isAPIVersionAtLeast(apiVersion, minVersion string) bool {
 // getHBAFirmwareViaSoap retrieves HBA firmwareVersion and driverVersion via a raw SOAP call.
 // This is needed for vSphere 9.1+ where these fields exist on HostHostBusAdapter but govmomi
 // does not yet model them in its Go struct types.
-func getHBAFirmwareViaSoap(ctx context.Context, client *govmomi.Client, hostRef types.ManagedObjectReference) (map[string]struct{ Firmware, Driver string }, error) {
-	result := make(map[string]struct{ Firmware, Driver string })
+func getHBAFirmwareViaSoap(ctx context.Context, client *govmomi.Client, hostRef types.ManagedObjectReference) (map[string]struct{ Firmware, Driver, DriverName string }, error) {
+	result := make(map[string]struct{ Firmware, Driver, DriverName string })
 
 	ctx, cancel := context.WithTimeout(ctx, soapCallTimeout)
 	defer cancel()
@@ -745,14 +746,14 @@ func getHBAFirmwareViaSoap(ctx context.Context, client *govmomi.Client, hostRef 
 
 // parseHBAFirmwareFromSOAP scans a raw SOAP XML response and extracts pci -> firmware/driver.
 // Uses a token scanner to remain namespace-agnostic and handle any HBA subtype name.
-func parseHBAFirmwareFromSOAP(data []byte) map[string]struct{ Firmware, Driver string } {
-	result := make(map[string]struct{ Firmware, Driver string })
+func parseHBAFirmwareFromSOAP(data []byte) map[string]struct{ Firmware, Driver, DriverName string } {
+	result := make(map[string]struct{ Firmware, Driver, DriverName string })
 	dec := xml.NewDecoder(bytes.NewReader(data))
 
 	var (
-		inHBA       bool
-		pci, fw, dv string
-		cur         string
+		inHBA           bool
+		pci, fw, dv, dn string
+		cur             string
 	)
 
 	for {
@@ -765,7 +766,7 @@ func parseHBAFirmwareFromSOAP(data []byte) map[string]struct{ Firmware, Driver s
 			local := t.Name.Local
 			if local == "HostHostBusAdapter" || (strings.HasPrefix(local, "Host") && strings.HasSuffix(local, "Hba")) {
 				inHBA = true
-				pci, fw, dv, cur = "", "", "", ""
+				pci, fw, dv, dn, cur = "", "", "", "", ""
 			} else if inHBA {
 				cur = local
 			}
@@ -773,7 +774,7 @@ func parseHBAFirmwareFromSOAP(data []byte) map[string]struct{ Firmware, Driver s
 			local := t.Name.Local
 			if inHBA && (local == "HostHostBusAdapter" || (strings.HasPrefix(local, "Host") && strings.HasSuffix(local, "Hba"))) {
 				if pci != "" && (fw != "" || dv != "") {
-					result[pci] = struct{ Firmware, Driver string }{fw, dv}
+					result[pci] = struct{ Firmware, Driver, DriverName string }{fw, dv, dn}
 				}
 				inHBA = false
 				cur = ""
@@ -790,6 +791,10 @@ func parseHBAFirmwareFromSOAP(data []byte) map[string]struct{ Firmware, Driver s
 					fw = text
 				case "driverVersion":
 					dv = text
+				case "driver":
+					// HostHostBusAdapter.driver is the kernel module name
+					// (e.g. "smartpqi"); driverVersion is a separate element.
+					dn = text
 				}
 			}
 		}
