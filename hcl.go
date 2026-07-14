@@ -78,6 +78,11 @@ const (
 	vsanHCLURL           = "https://vvs.broadcom.com/service/vsan/all.json"
 	broadcomGuideBaseURL = "https://compatibilityguide.broadcom.com"
 	broadcomAPIURL       = "https://compatibilityguide.broadcom.com/compguide/programs/viewResults?limit=20&page=1&sortBy=&sortType=ASC"
+	// broadcomGpuListURL fetches the entire vSphere third-party GPU guide in one
+	// page. Unlike the io/cpu/server checks (which only need count>0), GPU
+	// matching parses every row to join on VID:DID, so the limit must exceed the
+	// full list size (~63 rows today) with headroom.
+	broadcomGpuListURL = "https://compatibilityguide.broadcom.com/compguide/programs/viewResults?limit=500&page=1&sortBy=&sortType=ASC"
 )
 
 // broadcomHTTPClient bounds all outbound Broadcom HCL calls (vSAN DB download and
@@ -194,6 +199,24 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		ws.add(fmt.Sprintf("Failed to load or download vSAN HCL database: %v", err))
 	}
 
+	// Fetch the GPU compatibility guide once (only if the inventory has GPUs and
+	// we're online). GPUs are matched by VID:DID against this index. gpuDB stays
+	// nil under -offline (GPUs -> SKIPPED) or on fetch failure (GPUs -> ERROR).
+	var gpuDB gpuHCL
+	gpuFetchFailed := false
+	if !offline && inventoryHasGPU(rawInventory) {
+		gpuStart := time.Now()
+		var gpuErr error
+		gpuDB, gpuErr = loadGpuHCL(ws)
+		if stats != nil {
+			stats.BroadcomQueryMs += time.Since(gpuStart).Milliseconds()
+		}
+		if gpuErr != nil {
+			gpuFetchFailed = true
+			ws.add(fmt.Sprintf("Failed to load the GPU compatibility guide: %v", gpuErr))
+		}
+	}
+
 	var results []HostComponents
 
 	// Memoize Broadcom baseline lookups so identical hardware across hosts is
@@ -302,20 +325,20 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 
 				if pci.DeviceType == "GPU" {
 					// GPUs are certified in the vSphere third-party GPU guide
-					// (program=sptg), not the I/O Devices guide. That guide keys
-					// on device model — its filter endpoint ignores vid/did, so a
-					// PCI-ID query would match every GPU and falsely certify all
-					// of them. It is API-only (no local DB), so -offline marks
-					// GPUs SKIPPED like the CPU/system checks. Driver/firmware
-					// stay N/A: the guide certifies the device, not a driver.
+					// (program=sptg), not the I/O Devices guide, and are matched
+					// by exact VID:DID against the pre-fetched gpuDB index (see
+					// gpuHCL). The guide is API-only (no local DB): -offline marks
+					// GPUs SKIPPED like the CPU/system checks, and a failed guide
+					// fetch yields ERROR (undetermined) rather than a false FALSE.
+					// Driver/firmware stay N/A: the guide certifies the device.
 					res.HCLLink = buildGpuQueryURL(pci.DeviceName, releaseVersion)
-					if offline {
+					switch {
+					case offline:
 						res.Certified = CertSkipped
-					} else {
-						gpuFilters := []map[string]interface{}{
-							{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}},
-						}
-						res.Certified = qc.get("sptg", gpuFilters, []string{pci.DeviceName}, releaseVersion)
+					case gpuFetchFailed:
+						res.Certified = CertError
+					default:
+						res.Certified = gpuDB.verdict(vidHex, didHex, releaseVersion)
 					}
 				} else if pci.DeviceType != "unknown (debug)" {
 					// Check vSAN Offline DB First
@@ -437,7 +460,7 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 	}
 
 	if stats != nil {
-		stats.BroadcomQueryMs = qc.liveTime.Milliseconds()
+		stats.BroadcomQueryMs += qc.liveTime.Milliseconds()
 		for _, host := range results {
 			for _, res := range host.Results {
 				if res.Certified == CertSkipped {
@@ -1001,6 +1024,134 @@ func buildSystemQuery(displayModel, searchKeyword, releaseVersion string) HCLRes
 	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
 	u.RawQuery = params.Encode()
 	return HCLResult{Device: displayModel, DeviceType: "system", Instances: 1, HCLLink: u.String()}
+}
+
+// gpuHCL is the vSphere third-party GPU guide indexed for lookup: a device's
+// PCI "vid:did" (lowercase hex) maps to the exact ESXi release strings it is
+// certified for. GPUs are matched by VID:DID, not by name: the vSphere-reported
+// device name carries form-factor noise (e.g. "NVIDIA H100 NVL PCIe 94GB" vs the
+// guide's "NVIDIA H100 NVL") and short model tokens collide across siblings
+// (e.g. "L4" also matches "L40"/"L40S"), both of which defeat keyword matching.
+type gpuHCL map[string][]string
+
+// gpuKey builds the map key from a device's VID/DID hex (already lowercase,
+// %04x-formatted by the caller).
+func gpuKey(vidHex, didHex string) string {
+	return strings.ToLower(vidHex) + ":" + strings.ToLower(didHex)
+}
+
+// verdict reports whether the GPU identified by vid:did is certified for the
+// target release. Not found means the device is not a certified discrete GPU for
+// that release (CertFalse) — the same negative the guide itself would give.
+func (g gpuHCL) verdict(vidHex, didHex, releaseVersion string) CertStatus {
+	releases, ok := g[gpuKey(vidHex, didHex)]
+	if !ok {
+		return CertFalse
+	}
+	for _, r := range releases {
+		if r == releaseVersion {
+			return CertTrue
+		}
+	}
+	return CertFalse
+}
+
+// parseGpuHCL turns a raw sptg viewResults response into a gpuHCL index. It reads
+// VID/DID from each row's hoverData and the supported releases from esxVersion.
+// Rows without a VID/DID (e.g. SXM/NVSwitch form factors that are not PCI-pluggable
+// cards) are skipped. Returns the index, the guide's reported total count, and the
+// number of rows actually present in this page so the caller can detect truncation.
+func parseGpuHCL(body []byte) (index gpuHCL, count, rows int, err error) {
+	var resp struct {
+		Data struct {
+			Count       int `json:"count"`
+			FieldValues []struct {
+				EsxVersion []string `json:"esxVersion"`
+				HoverData  []struct {
+					DisplayName string `json:"displayName"`
+					Value       string `json:"value"`
+				} `json:"hoverData"`
+			} `json:"fieldValues"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, 0, 0, err
+	}
+	g := make(gpuHCL)
+	for _, row := range resp.Data.FieldValues {
+		var vid, did string
+		for _, h := range row.HoverData {
+			switch h.DisplayName {
+			case "VID":
+				vid = h.Value
+			case "DID":
+				did = h.Value
+			}
+		}
+		if vid == "" || did == "" {
+			continue
+		}
+		g[gpuKey(vid, did)] = row.EsxVersion
+	}
+	return g, resp.Data.Count, len(resp.Data.FieldValues), nil
+}
+
+// loadGpuHCL fetches and indexes the whole GPU guide in one call. The sptg filter
+// endpoint ignores PCI-ID filters, so the entire (small) list is fetched and
+// joined client-side. A non-nil error leaves GPU verdicts undetermined (the
+// caller maps that to CertError, never a false CertFalse).
+func loadGpuHCL(ws *warnSink) (gpuHCL, error) {
+	reqBody := map[string]interface{}{
+		"programId": "sptg",
+		"filters":   []map[string]interface{}{},
+		"keyword":   []string{},
+		"date":      map[string]string{"startDate": "", "endDate": ""},
+	}
+	jsonData, _ := json.Marshal(reqBody)
+	resp, err := doBroadcomWithRetry(func() (*http.Request, error) {
+		r, e := http.NewRequest("POST", broadcomGpuListURL, bytes.NewReader(jsonData))
+		if e == nil {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		return r, e
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("GPU guide returned HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	g, count, rows, err := parseGpuHCL(body)
+	if err != nil {
+		return nil, err
+	}
+	// The list is fetched as a single page; warn (rather than silently under-
+	// report) if the guide ever outgrows the page limit.
+	if rows < count {
+		ws.add(fmt.Sprintf("GPU compatibility guide has %d entries but only %d were fetched; some GPUs may be reported as not certified. Please report this so the fetch limit can be raised.", count, rows))
+	}
+	if count > 0 && len(g) == 0 {
+		ws.add("GPU compatibility guide returned rows but none carried a VID/DID; GPU checks may be unreliable.")
+	}
+	return g, nil
+}
+
+// inventoryHasGPU reports whether any host has a GPU, so the GPU guide is fetched
+// only when it is actually needed.
+func inventoryHasGPU(inventory []RawHostData) bool {
+	for _, host := range inventory {
+		for _, pci := range host.PCIDevices {
+			if pci.DeviceType == "GPU" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // buildGpuQueryURL builds a link into the vSphere third-party GPU guide
