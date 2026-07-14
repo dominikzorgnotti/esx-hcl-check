@@ -263,6 +263,8 @@ Every result carries three verdicts — `hw_certified`, `driver_certified`, and 
 
 In large environments, you may want to ignore non-critical components (like integrated AHCI controllers or USB bridges) to prevent them from cluttering your reports. You can achieve this by creating an `exclude.json` file in your working directory.
 
+This is also the intended way to handle **embedded management / BMC display adapters** — HPE iLO VGA, the Matrox G200 found on many server baseboards, and similar. These are enumerated as PCI display devices, so the tool classifies them as **GPUs** and checks them against the vSphere third-party GPU guide, where they are (correctly) not listed — surfacing them as `FALSE`. They are not discrete accelerators and are not meant to be certified there, so exclude them rather than treating the `FALSE` as a finding. The shipped `exclude.json` already lists `iLO5 VGA` as an example; add the exact device name (or PCI ID) your hosts report for other management VGA adapters.
+
 You can filter devices using three different methods:
 
 1. **names:** An exact string match of the device name.  
@@ -275,7 +277,8 @@ You can filter devices using three different methods:
 {  
   "names": [  
     "Lewisburg SATA AHCI Controller",  
-    "VMware NVMe Controller"  
+    "VMware NVMe Controller",  
+    "iLO5 VGA"  
   ],  
   "regex_names": [  
     "Lewisburg.*",  
