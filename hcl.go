@@ -300,7 +300,24 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					}
 				}
 
-				if pci.DeviceType != "unknown (debug)" {
+				if pci.DeviceType == "GPU" {
+					// GPUs are certified in the vSphere third-party GPU guide
+					// (program=sptg), not the I/O Devices guide. That guide keys
+					// on device model — its filter endpoint ignores vid/did, so a
+					// PCI-ID query would match every GPU and falsely certify all
+					// of them. It is API-only (no local DB), so -offline marks
+					// GPUs SKIPPED like the CPU/system checks. Driver/firmware
+					// stay N/A: the guide certifies the device, not a driver.
+					res.HCLLink = buildGpuQueryURL(pci.DeviceName, releaseVersion)
+					if offline {
+						res.Certified = CertSkipped
+					} else {
+						gpuFilters := []map[string]interface{}{
+							{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}},
+						}
+						res.Certified = qc.get("sptg", gpuFilters, []string{pci.DeviceName}, releaseVersion)
+					}
+				} else if pci.DeviceType != "unknown (debug)" {
 					// Check vSAN Offline DB First
 					foundInVsan := false
 					if vsanDB != nil {
@@ -984,6 +1001,23 @@ func buildSystemQuery(displayModel, searchKeyword, releaseVersion string) HCLRes
 	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
 	u.RawQuery = params.Encode()
 	return HCLResult{Device: displayModel, DeviceType: "system", Instances: 1, HCLLink: u.String()}
+}
+
+// buildGpuQueryURL builds a link into the vSphere third-party GPU guide
+// (program=sptg), which certifies GPUs by device model — its filter endpoint
+// ignores PCI IDs, unlike the I/O Devices guide. Mirrors the keyword-based
+// server/CPU builders.
+func buildGpuQueryURL(model, releaseVersion string) string {
+	u, _ := url.Parse("https://compatibilityguide.broadcom.com/search")
+	params := url.Values{}
+	params.Set("program", "sptg")
+	params.Set("persona", "live")
+	params.Set("column", "partner")
+	params.Set("order", "asc")
+	params.Set("keyword", model)
+	params.Set("productReleaseVersion", fmt.Sprintf("[%s]", releaseVersion))
+	u.RawQuery = params.Encode()
+	return u.String()
 }
 
 func buildCPUQuery(cpuModel, cpuId, releaseVersion string) HCLResult {
