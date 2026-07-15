@@ -542,16 +542,13 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 				dn = info.DriverName
 			}
 			// Storage HBA identity/link (independent of the 9.1 firmware SOAP
-			// path, which may not run): a "vmhbaN" name and UP when the adapter
-			// reports "online". NICs already resolved above keep their values.
+			// path, which may not run): a "vmhbaN" name plus a link state that is
+			// meaningful only for fabric/target-attached adapters. NICs already
+			// resolved above keep their values.
 			if esxName == "" {
 				if h, ok := pciHBA[pciDev.Id]; ok {
 					esxName = h.Device
-					if strings.EqualFold(h.Status, "online") {
-						linkState = "UP"
-					} else {
-						linkState = "DOWN"
-					}
+					linkState = hbaLinkState(h.Status)
 				}
 			}
 
@@ -689,6 +686,21 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 	}
 
 	return &raw
+}
+
+// hbaLinkState maps a storage adapter's operational status (HostBusAdapter.Status)
+// to a -map link state. A link concept only applies to fabric/target-attached
+// adapters (FC/iSCSI), which report "online"/"offline". Internal RAID/SAS
+// controllers report "unknown"/"unbound" even when perfectly healthy, so those
+// yield "" (link_state omitted) rather than a misleading "DOWN".
+func hbaLinkState(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "online":
+		return "UP"
+	case "offline":
+		return "DOWN"
+	}
+	return ""
 }
 
 // isAPIVersionAtLeast returns true if apiVersion >= minVersion (dot-separated integers).
