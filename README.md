@@ -44,7 +44,7 @@ slsa-verifier verify-artifact \
   esx-hcl-check-linux-amd64 \
   --provenance-path esx-hcl-check-linux-amd64.intoto.jsonl \
   --source-uri github.com/dominikzorgnotti/esx-hcl-check \
-  --source-tag v0.4.1
+  --source-tag v0.6.0
 ```
 
 A `PASSED: SLSA verification passed` result confirms the binary's origin and integrity.
