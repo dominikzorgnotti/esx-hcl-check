@@ -111,6 +111,7 @@ A missing/invalid CA bundle or an unparseable timeout is a hard error rather tha
 | `-json` | Outputs the final HCL evaluation results as a JSON payload instead of a text table. | `false` |
 | `-csv` | Outputs the results as CSV (one row per device) to stdout, with the same detail as `-json`. Redirect with `> report.csv`. Takes precedence over `-json`. | `false` |
 | `-details` | Includes raw hardware identifiers (VID, DID, SVID, SSID) in the output. Auto-enables `-json` (unless `-csv` is set, giving a detailed CSV). | `false` |
+| `-map` | In `-json`/`-csv` output, lists each network card and storage adapter individually with its ESX device name (`vmnicN` / `vmhbaN`) and link state (`UP`/`DOWN`). See [Mapping adapters to ESX device names](#-mapping-adapters-to-esx-device-names). No effect without `-json`/`-csv`; incompatible with `-unique`. | `false` |
 | `-vsan` | Extracts vSAN SSDs and NVMe drives and checks them against the vSAN HCL database. | `false` |
 | `-quiet` | Suppresses the Issues section that lists devices for which firmware/driver information could not be retrieved. | `false` |
 | `-workers` | How many hosts to collect from at once. **`1` runs fully sequentially** (one host at a time); higher values collect that many hosts in parallel. Valid range is `1`–`8` (hard maximum `8`): values above `8` are capped, and values below `1` are rejected. Use `1` in constrained or rate-sensitive environments. | `4` |
@@ -217,6 +218,37 @@ Without `-json`, the same figures are printed as a **Statistics** section (Inven
 ## **⏭️ Skipped Hosts**
 
 Hosts that cannot be scanned are no longer silently dropped. Each appears in the output with a `skip_reason` (e.g. `host not connected (state: disconnected)`, `property-collector-error: ...`, or `could not enumerate hosts: ...`), and the JSON also carries a `source` field identifying the originating vCenter.
+
+## **🔗 Mapping adapters to ESX device names**
+
+By default, identical adapters on a host are collapsed into a single result with a `number_of_instances` count — you see *what* hardware is present, not *which* port it is. Pass `-map` (together with `-json` or `-csv`) to expand every **network card** and **storage adapter** into one row per physical adapter, each annotated with:
+
+* `esx_device_name` — the ESX-assigned adapter name (e.g. `vmnic0` for a NIC, `vmhba1` for a storage HBA).
+* `link_state` — `UP` or `DOWN`. For NICs this reflects the physical link; for storage HBAs it reflects whether the adapter reports `online`.
+
+Because each adapter is printed individually, `number_of_instances` is dropped for those rows (other device classes — CPU, system, GPU, vSAN disks — are unaffected and keep it). Both fields come from the vSphere API (`config.network.pnic` and `config.storageDevice.hostBusAdapter`) — no `esxcli`.
+
+`-map` only affects the machine-readable formats; it is ignored (with a warning) in the default text table. It is the opposite of `-unique` (which aggregates across hosts), so the two cannot be combined.
+
+```bash
+./esx-hcl-check -release="ESXi 9.1" -json -map
+```
+
+```json
+{
+  "device": "QLogic 57810 10 Gigabit Ethernet Adapter",
+  "device_type": "io card (network)",
+  "current_firmware": "Storm: 7.13.20.0 MFW: 7.16.13",
+  "current_driver_version": "1.4.51.0",
+  "driver_name": "qfle3",
+  "hw_certified": "TRUE",
+  "driver_certified": "N/A",
+  "firmware_certified": "N/A",
+  "esx_device_name": "vmnic0",
+  "link_state": "UP",
+  "hcl": "https://compatibilityguide.broadcom.com/search?..."
+}
+```
 
 ## **🧠 Architecture: How Verification Works**
 

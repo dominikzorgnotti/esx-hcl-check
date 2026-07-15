@@ -135,7 +135,7 @@ func TestPerformHCLChecksGPUUsesSptgGuide(t *testing.T) {
 
 	// Offline + a path that does not exist -> no vSAN DB, no network.
 	ws := &warnSink{json: true}
-	results := performHCLChecks(inventory, "ESXi 9.1", true, false, true, "does-not-exist.json", nil, ws)
+	results := performHCLChecks(inventory, "ESXi 9.1", true, false, true, false, "does-not-exist.json", nil, ws)
 
 	if len(results) != 1 {
 		t.Fatalf("got %d host results, want 1", len(results))

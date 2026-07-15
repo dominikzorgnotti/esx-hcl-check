@@ -69,6 +69,7 @@ func main() {
 		statsFlag   = flag.Bool("stats", false, "Emit run statistics (inventory counts and query timings) as a 'stats' block/key")
 		offline     = flag.Bool("offline", false, "Run without internet: skip all Broadcom Compatibility Guide API checks (marked SKIPPED) and use only the local vSAN HCL database")
 		csvOut      = flag.Bool("csv", false, "Output results as CSV (one row per device) to stdout, with the same detail as -json")
+		mapAdapters = flag.Bool("map", false, "In -json/-csv output, list each network card and storage adapter individually with its ESX device name (vmnicN/vmhbaN) and link state (UP/DOWN). Drops number_of_instances for those rows. Incompatible with -unique.")
 		showVersion = flag.Bool("version", false, "Print version information and exit")
 	)
 	flag.Parse()
@@ -95,6 +96,20 @@ func main() {
 	// payload's "warnings" key in JSON mode (so stdout stays a single valid JSON
 	// document for CI/CD). CSV takes precedence over JSON for output.
 	ws := &warnSink{json: *jsonOutput && !*csvOut}
+
+	// -map only shapes the machine-readable output; it is a no-op in text mode.
+	// It de-aggregates adapters, the opposite of -unique's cross-host dedup, so
+	// combining the two is a hard error rather than a silently ambiguous result.
+	mapMode := *mapAdapters && (*jsonOutput || *csvOut)
+	if *mapAdapters {
+		if *uniqueOut {
+			fmt.Fprintln(os.Stderr, "Error: -map cannot be combined with -unique (-map lists each adapter per host; -unique aggregates across hosts).")
+			os.Exit(2)
+		}
+		if !mapMode {
+			ws.add("-map has no effect without -json or -csv; ignoring it.")
+		}
+	}
 
 	if *insecure {
 		ws.add("Insecure mode (GOVC_INSECURE / -k) is set — TLS certificate verification is DISABLED. The vCenter connection is vulnerable to man-in-the-middle interception; use it only for trusted, self-signed lab environments.")
@@ -223,7 +238,7 @@ func main() {
 		// surface stats (inventory + vCenter timing) if asked.
 		switch {
 		case *csvOut:
-			printCSV(nil)
+			printCSV(nil, mapMode)
 		case statsOut != nil && *jsonOutput:
 			printJSON([]HostComponents{}, ws.messages, statsOut, *quiet)
 		case statsOut != nil:
@@ -235,7 +250,7 @@ func main() {
 	// ---------------------------------------------------------
 	// PHASE 2: HCL Verification (API + vSAN DB)
 	// ---------------------------------------------------------
-	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci, *offline, *vsanHclFile, &stats, ws)
+	hclResults := performHCLChecks(rawInventory, *esxiRelease, *detailsOut, *debugPci, *offline, mapMode, *vsanHclFile, &stats, ws)
 
 	// Compute the exit code from the complete result set, before -unique/filters
 	// drop entries, so the process status always reflects the true findings.
@@ -253,7 +268,7 @@ func main() {
 	// ---------------------------------------------------------
 	switch {
 	case *csvOut:
-		printCSV(hclResults)
+		printCSV(hclResults, mapMode)
 	case *jsonOutput:
 		printJSON(hclResults, ws.messages, statsOut, *quiet)
 	default:

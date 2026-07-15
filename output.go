@@ -22,21 +22,59 @@ var csvHeader = []string{
 	"vid", "did", "svid", "ssid", "cpu_id", "hcl",
 }
 
+// csvHeaderMap is the -map header: the same columns plus esx_device_name and
+// link_state (after firmware_certified, mirroring the JSON field order). The
+// number_of_instances column is kept for aggregated device classes but left
+// blank on the per-adapter rows -map expands.
+var csvHeaderMap = []string{
+	"source", "datacenter", "cluster", "hostname", "skip_reason",
+	"device", "device_type", "number_of_instances",
+	"current_firmware", "current_driver_version", "driver_name",
+	"hw_certified", "driver_certified", "firmware_certified",
+	"esx_device_name", "link_state",
+	"max_supported_release", "supported_drivers", "supported_firmwares",
+	"vid", "did", "svid", "ssid", "cpu_id", "hcl",
+}
+
 // csvRows builds the CSV as a header plus one row per device. A skipped
 // host/cluster (no results) becomes a context-only row so it is not lost.
-// Extracted from printCSV so the row/column mapping is unit-testable.
-func csvRows(data []HostComponents) [][]string {
-	rows := [][]string{csvHeader}
+// Extracted from printCSV so the row/column mapping is unit-testable. When
+// mapMode is set, the esx_device_name/link_state columns are added and
+// number_of_instances is blank for per-adapter rows (Instances 0).
+func csvRows(data []HostComponents, mapMode bool) [][]string {
+	header := csvHeader
+	if mapMode {
+		header = csvHeaderMap
+	}
+	rows := [][]string{header}
 	for _, host := range data {
 		if len(host.Results) == 0 {
 			if host.SkipReason != "" {
-				row := make([]string, len(csvHeader))
+				row := make([]string, len(header))
 				row[0], row[1], row[2], row[3], row[4] = host.Source, host.Datacenter, host.Cluster, host.Hostname, host.SkipReason
 				rows = append(rows, row)
 			}
 			continue
 		}
 		for _, r := range host.Results {
+			// Instances 0 marks a per-adapter -map row; show it blank rather
+			// than "0" so number_of_instances reads as "not applicable here".
+			instances := ""
+			if r.Instances > 0 {
+				instances = strconv.Itoa(r.Instances)
+			}
+			if mapMode {
+				rows = append(rows, []string{
+					host.Source, host.Datacenter, host.Cluster, host.Hostname, host.SkipReason,
+					r.Device, r.DeviceType, instances,
+					r.Firmware, r.DriverVer, r.DriverName,
+					r.Certified.String(), r.DriverCertified.String(), r.FirmwareCertified.String(),
+					r.EsxName, r.LinkState,
+					r.MaxSupportedRelease, strings.Join(r.SupportedDrivers, ";"), strings.Join(r.SupportedFirmwares, ";"),
+					r.VID, r.DID, r.SVID, r.SSID, r.CPUID, r.HCLLink,
+				})
+				continue
+			}
 			rows = append(rows, []string{
 				host.Source, host.Datacenter, host.Cluster, host.Hostname, host.SkipReason,
 				r.Device, r.DeviceType, strconv.Itoa(r.Instances),
@@ -52,9 +90,9 @@ func csvRows(data []HostComponents) [][]string {
 
 // printCSV writes one row per device to stdout — the same content as the JSON
 // results, flattened for spreadsheets.
-func printCSV(data []HostComponents) {
+func printCSV(data []HostComponents, mapMode bool) {
 	w := csv.NewWriter(os.Stdout)
-	_ = w.WriteAll(csvRows(data))
+	_ = w.WriteAll(csvRows(data, mapMode))
 	if err := w.Error(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing CSV: %v\n", err)
 	}
