@@ -88,6 +88,26 @@ func TestPerformHCLChecks_MapDeaggregates(t *testing.T) {
 	}
 }
 
+// Storage link state is reported only for fabric/target-attached adapters;
+// internal RAID/SAS controllers (unknown/unbound) omit it rather than reading
+// a misleading DOWN.
+func TestHBALinkState(t *testing.T) {
+	cases := map[string]string{
+		"online":   "UP",
+		"Online":   "UP",
+		" online ": "UP",
+		"offline":  "DOWN",
+		"unknown":  "",
+		"unbound":  "",
+		"":         "",
+	}
+	for status, want := range cases {
+		if got := hbaLinkState(status); got != want {
+			t.Errorf("hbaLinkState(%q) = %q, want %q", status, got, want)
+		}
+	}
+}
+
 // CSV -map mode adds the esx_device_name/link_state columns, blanks
 // number_of_instances on per-adapter rows, and keeps it on aggregated rows.
 func TestCSVRows_MapMode(t *testing.T) {
