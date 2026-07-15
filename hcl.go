@@ -181,13 +181,24 @@ func doBroadcomWithRetry(newReq func() (*http.Request, error)) (*http.Response, 
 	return nil, lastErr
 }
 
+// isMappableAdapter reports whether a PCI device class is a network card or
+// storage adapter — the classes -map expands into per-adapter rows with an ESX
+// device name and link state. GPUs and NVMe disks are deliberately excluded.
+func isMappableAdapter(deviceType string) bool {
+	switch deviceType {
+	case "io card (network)", "io card (fc)", "io card (raid)":
+		return true
+	}
+	return false
+}
+
 // performHCLChecks processes the raw inventory and maps it to Broadcom search queries.
 // When offline is true, no live Broadcom API calls are made: components that can
 // only be verified via the API are marked CertSkipped, while components found in
 // the local vSAN offline DB still get a real verdict. If stats is non-nil, it
 // records the vSAN DB load time, the total live Broadcom query time, and the
 // number of skipped checks.
-func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci, offline bool, vsanHclPath string, stats *Stats, ws *warnSink) []HostComponents {
+func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details, debugPci, offline, mapMode bool, vsanHclPath string, stats *Stats, ws *warnSink) []HostComponents {
 
 	// Ensure we have an up-to-date offline vSAN database
 	vsanStart := time.Now()
@@ -280,11 +291,21 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		pciMap := make(map[pciKey]int)
 
 		for _, pci := range raw.PCIDevices {
+			// -map lists each network card / storage adapter individually with its
+			// ESX device name and link state, so those rows are not aggregated
+			// (identical-hardware verdicts still come from the shared query cache).
+			mappable := mapMode && isMappableAdapter(pci.DeviceType)
+
 			k := pciKey{VID: pci.VID, DID: pci.DID, SVID: pci.SVID, SSID: pci.SSID, FW: pci.Firmware, DV: pci.DriverVer, DN: pci.DriverName}
 
-			if idx, found := pciMap[k]; found {
-				hostComp.Results[idx].Instances++
-			} else {
+			if !mappable {
+				if idx, found := pciMap[k]; found {
+					hostComp.Results[idx].Instances++
+					continue
+				}
+			}
+
+			{
 				vidHex := fmt.Sprintf("%04x", uint16(pci.VID))
 				didHex := fmt.Sprintf("%04x", uint16(pci.DID))
 				svidHex := fmt.Sprintf("%04x", uint16(pci.SVID))
@@ -299,6 +320,14 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 					DriverName:        pci.DriverName,
 					DriverCertified:   CertNA,
 					FirmwareCertified: CertNA,
+				}
+
+				if mappable {
+					// One row per physical adapter: carry its identity and drop
+					// number_of_instances (Instances 0 -> omitted).
+					res.Instances = 0
+					res.EsxName = pci.EsxName
+					res.LinkState = pci.LinkState
 				}
 
 				if details {
@@ -365,7 +394,9 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 				}
 
 				hostComp.Results = append(hostComp.Results, res)
-				pciMap[k] = len(hostComp.Results) - 1
+				if !mappable {
+					pciMap[k] = len(hostComp.Results) - 1
+				}
 			}
 		}
 

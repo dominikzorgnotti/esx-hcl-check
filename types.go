@@ -71,6 +71,12 @@ type RawPCIDevice struct {
 	Firmware   string `json:"firmware"`
 	DriverVer  string `json:"driver_version"`
 	DriverName string `json:"driver_name"`
+	// EsxName is the ESX-assigned adapter name (e.g. "vmnic0" for a NIC,
+	// "vmhba1" for a storage HBA); empty for device classes that have none.
+	// LinkState is "UP"/"DOWN" derived from the adapter's connection state, or
+	// "" when not applicable. Both feed the -map output.
+	EsxName   string `json:"esx_name,omitempty"`
+	LinkState string `json:"link_state,omitempty"`
 }
 
 type RawDiskDevice struct {
@@ -143,15 +149,22 @@ type MissingDetail struct {
 // --- Structs for Phase 2: HCL Verification ---
 
 type HCLResult struct {
-	Device            string     `json:"device"`
-	DeviceType        string     `json:"device_type"`
-	Instances         int        `json:"number_of_instances"`
+	Device     string `json:"device"`
+	DeviceType string `json:"device_type"`
+	// Instances is omitempty so -map, which lists each adapter individually
+	// (Instances left 0), drops number_of_instances for those rows while
+	// aggregated device classes (Instances >= 1) still report it.
+	Instances         int        `json:"number_of_instances,omitempty"`
 	Firmware          string     `json:"current_firmware"`
 	DriverVer         string     `json:"current_driver_version"`
 	DriverName        string     `json:"driver_name"`
 	Certified         CertStatus `json:"hw_certified"`
 	DriverCertified   CertStatus `json:"driver_certified"`
 	FirmwareCertified CertStatus `json:"firmware_certified"`
+	// EsxName / LinkState are populated only under -map for network cards and
+	// storage adapters: the ESX device name (e.g. "vmnic0") and "UP"/"DOWN".
+	EsxName   string `json:"esx_device_name,omitempty"`
+	LinkState string `json:"link_state,omitempty"`
 	// MaxSupportedRelease is the highest ESXi release this device is certified
 	// under in the vSAN offline HCL (e.g. "ESXi 9.0"), useful when it is not
 	// certified for the target release. Empty when only the live API was used.

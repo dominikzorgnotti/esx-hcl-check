@@ -377,6 +377,11 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 	hbaKeyToPci := make(map[string]string)
 	hbaDevToPci := make(map[string]string)
 	nvmeDriverName := make(map[string]string) // pci_id -> driverName (HostHostBusAdapter.Driver)
+	// pciHBA maps a storage adapter's PCI id to its ESX device name (e.g.
+	// "vmhba1") and operational status, for the -map output. Populated for all
+	// HBA subtypes; only fc/raid roles look it up (NICs come from pciPnics, and
+	// NVMe controllers are emitted as disks, not PCI adapters).
+	pciHBA := make(map[string]struct{ Device, Status string })
 
 	if hostMo.Config != nil {
 		if hostMo.Config.Network != nil {
@@ -391,6 +396,7 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 				if hba != nil && hba.Pci != "" {
 					hbaKeyToPci[hba.Key] = hba.Pci
 					hbaDevToPci[hba.Device] = hba.Pci
+					pciHBA[hba.Pci] = struct{ Device, Status string }{hba.Device, hba.Status}
 					switch hbaBase.(type) {
 					case *types.HostFibreChannelHba:
 						pciRoles[hba.Pci] = "io card (fc)"
@@ -518,15 +524,35 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 			}
 
 			devType := pciRoles[pciDev.Id]
-			var fw, dv, dn string
+			var fw, dv, dn, esxName, linkState string
 			if pnic, ok := pciPnics[pciDev.Id]; ok {
 				fw = pnic.FirmwareVersion
 				dv = pnic.DriverVersion
 				dn = pnic.Driver
+				// LinkSpeed is nil when the physical NIC link is down.
+				esxName = pnic.Device
+				if pnic.LinkSpeed != nil {
+					linkState = "UP"
+				} else {
+					linkState = "DOWN"
+				}
 			} else if info, ok := hba91Firmware[pciDev.Id]; ok {
 				fw = info.Firmware
 				dv = info.Driver
 				dn = info.DriverName
+			}
+			// Storage HBA identity/link (independent of the 9.1 firmware SOAP
+			// path, which may not run): a "vmhbaN" name and UP when the adapter
+			// reports "online". NICs already resolved above keep their values.
+			if esxName == "" {
+				if h, ok := pciHBA[pciDev.Id]; ok {
+					esxName = h.Device
+					if strings.EqualFold(h.Status, "online") {
+						linkState = "UP"
+					} else {
+						linkState = "DOWN"
+					}
+				}
 			}
 
 			if devType == "nvme-disk" {
@@ -582,6 +608,8 @@ func extractHostHardware(ctx context.Context, client *govmomi.Client, pc *proper
 					Firmware:   fw,
 					DriverVer:  dv,
 					DriverName: dn,
+					EsxName:    esxName,
+					LinkState:  linkState,
 				})
 			}
 		}

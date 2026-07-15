@@ -23,7 +23,7 @@ func TestCSVRows(t *testing.T) {
 		},
 	}
 
-	rows := csvRows(data)
+	rows := csvRows(data, false)
 
 	// header + 1 device row + 1 skip row
 	if len(rows) != 3 {
