@@ -289,7 +289,7 @@ Every result carries three verdicts — `hw_certified`, `driver_certified`, and 
 | `FALSE` | Checked and **not** certified. |
 | `N/A` | Not applicable or not determinable from the available data (e.g. a firmware verdict for a device the offline DB has no matrix for, or any driver/firmware column when only the live API baseline was available). |
 | `ERROR` | A live Broadcom API lookup failed (network or parse error). Kept **distinct from `FALSE`** so a transient outage is never mistaken for "not certified". |
-| `SKIPPED` | The check was not performed — e.g. an API-only check under `-offline`. |
+| `SKIPPED` | The check was not performed — e.g. an API-only check under `-offline`, or a CPU whose CPUID the host did not report (the Broadcom CPU guide is indexed by CPUID, so certification cannot be determined from the model name). |
 
 ## **🛡️ Excluding Specific Devices**
 

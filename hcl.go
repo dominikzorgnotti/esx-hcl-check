@@ -271,15 +271,28 @@ func performHCLChecks(rawInventory []RawHostData, releaseVersion string, details
 		}
 		cpuRes.DriverCertified = CertNA
 		cpuRes.FirmwareCertified = CertNA
-		if offline {
+		switch {
+		case offline:
 			cpuRes.Certified = CertSkipped
-		} else {
-			cpuKeyword := raw.CpuModel
-			if raw.CpuId != "" {
-				cpuKeyword = raw.CpuId
-			}
+		case raw.CpuId == "":
+			// Without a CPUID the check cannot be performed at all. The Broadcom
+			// CPU guide is indexed by CPUID, not by model name: a keyword query
+			// for a specific processor ("Xeon Gold 6136", "EPYC 7763", with or
+			// without the vendor decoration) returns zero rows even when that CPU
+			// is certified, which count==0 would turn into a false "not
+			// certified". Only bare series tokens ("Xeon") match anything, and
+			// those are broad enough to certify the wrong part. So report the
+			// check as undetermined rather than inventing a verdict.
+			cpuRes.Certified = CertSkipped
+			hostComp.Issues = append(hostComp.Issues, MissingDetail{
+				Hostname: raw.Hostname,
+				Device:   raw.CpuModel,
+				Missing:  []string{"cpu_id"},
+				Reason:   "CPUID not reported by the host; the Broadcom CPU guide is indexed by CPUID, so certification cannot be determined from the model name",
+			})
+		default:
 			cpuFilters := []map[string]interface{}{{"displayKey": "productReleaseVersion", "filterValues": []string{releaseVersion}}}
-			cpuRes.Certified = qc.get("cpu", cpuFilters, []string{cpuKeyword}, releaseVersion)
+			cpuRes.Certified = qc.get("cpu", cpuFilters, []string{raw.CpuId}, releaseVersion)
 		}
 		hostComp.Results = append(hostComp.Results, cpuRes)
 
